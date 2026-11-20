@@ -1,15 +1,14 @@
+//! ElfStory core simulation: pure Rust, zero Godot dependency.
+//! Ported from elfstoryreborn (TS) Milestones 1-3 — see HANDOFF.md guardrails.
+
+pub mod combat;
+pub mod difficulty;
+pub mod loot;
 pub mod rng;
-
-#[cfg(test)]
-mod tests {
-    use super::rng::Rng;
-
-    #[test]
-    fn seeded_rng_is_deterministic() {
-        let mut a = Rng::new(0xCAFE_1234);
-        let mut b = Rng::new(0xCAFE_1234);
-        for _ in 0..32 {
-            assert_eq!(a.next_u32(), b.next_u32());
-        }
-    }
-}
+pub mod run_rules;
+pub mod save;
+pub mod skills;
+pub mod town;
+pub mod town_layout;
+pub mod types;
+pub mod world;
