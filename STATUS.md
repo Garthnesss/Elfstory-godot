@@ -29,3 +29,39 @@
 - Merchant resolution now matches TS: Torin's trade resolves to the rebuilt 'blacksmith' stock once complete; stocks seed lazily from npcs.rs (the M2 hand-built minimal stock is gone).
 - Bridge + Godot: `dialogue_json` / `choose_dialogue` / `close_dialogue`; DialoguePanel renders real nodes with choice buttons; movement gated while dialogue is open.
 - Verified: **cargo test 69/69 on Mac**, gdext builds, headless RUN1_CHECK_OK (incl. new dialogue bridge smoke), Main scene 90 frames no errors. Visual/dialogue-by-eye check still Garth's gate in the editor.
+
+## Milestone 3 (part 2) — World content port (Nov 20, 2026)
+
+- **world.rs grew to ~3,500 lines:** the three remaining towns
+  (Highspire, Thornwick Fen, Cinderwatch) and the Silverwood Vale
+  overworld (48×26: four city gates, four dungeon portals, waystone,
+  standing stones, hunter camp, Harlan the brigand captain) are ported
+  from the TS ASCII layouts with exact gate/portal coordinates.
+- **Side dungeons:** Barrow / Mire / Frost generator with per-branch
+  depth offsets, biome set pieces, floor-1 guaranteed town supply
+  (Barrow Iron / Mire Timber / Frost Coal) and named terminal bosses —
+  Arch-Wight Morvath (barrow_2), Spore-Matron Vexis (mire_2),
+  Ignis-Warden Kaelthar (frost_3) — each guarding a boss relic chest.
+- **Main-descent parity:** the sealed treasure vault (missing in M1),
+  all four set pieces (Sepulcher, Spore-Heart, Rime Circle, Sealed
+  Brazier with seal doors/braziers), the Abyss echo boss on even
+  depths ≥ 6 and the Abyssal Harbinger on odd depths ≥ 7.
+- **Zone access:** `generate_zone_by_id`, `create_initial_zones`,
+  `get_zone_context` (full lore/tactical/recommended-level table).
+- **Session travel wired:** gate cities route through the overworld
+  with TS landing tiles; the Highspire causeway gate stays sealed
+  without a Citadel Pass (verbatim log line); side-dungeon portals
+  exit back to the overworld (no banking); arriving in Oakhaven with
+  town items banks them (supplies included) via the return tick.
+- **Front-end fix found by screenshot:** Oakhaven's .glb town
+  landmarks were drawn at their Oakhaven coordinates in every zone;
+  landmark building is now gated to Oakhaven.
+- **Verified:** cargo test 77/77 on the Mac (incl. a session
+  travel-graph test: gates, sealed Highspire, barrow portal round
+  trip, supply banking), zero warnings, gdext builds, headless
+  checks green, and real rendered screenshots of Oakhaven and the
+  Silverwood Vale captured from the running game.
+- Session-level *behaviors* for the new tiles (opening the vault
+  door, lighting seal braziers, waystone attunement, boss-chest
+  looting) remain future session work, as in the TS split — all
+  world-side tiles, interactIds and data are in place.

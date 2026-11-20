@@ -1,20 +1,25 @@
-//! World generation, SLICE port of `elfstoryreborn/src/game/world.ts`.
+//! World generation, port of `elfstoryreborn/src/game/world.ts`.
 //!
-//! In scope (Milestone 1 vertical slice):
+//! In scope:
 //! - `create_oakhaven_map` — hand-authored Oakhaven, Torin at (7, 4).
+//! - `create_highspire_map` / `create_thornwick_map` /
+//!   `create_cinderwatch_map` / `create_overworld_map` — the remaining
+//!   hand-authored towns and the Silverwood Vale overworld (Milestone 3).
 //! - `generate_dungeon_floor` — room/corridor generator with the
 //!   orthogonal connectivity guarantee and, on Floor 1 of the main
 //!   descent, the guaranteed 4 town items (3 Blacksmith pieces +
-//!   Heartcoal) as ground loot.
+//!   Heartcoal) as ground loot. Story bosses (Floors 2/4/5), mini-boss
+//!   wardens (Floors 1/3), Abyss echo bosses (even Abyss floors) and
+//!   harbingers (odd Abyss floors), all four set pieces (sepulcher,
+//!   spore-heart, rime-circle, sealed-brazier) and the sealed treasure
+//!   vault are ported.
+//! - `generate_side_dungeon_floor` — barrow/mire/frost branches reusing
+//!   the dungeon generator at an effective depth, with biome pools,
+//!   floor-1 town supplies and named terminal-floor side bosses.
+//! - `generate_zone_by_id` / `create_initial_zones` / `get_zone_context`.
 //! - `create_enemy` / `promote_enemy_rank` — every spawn funnels through
 //!   `difficulty::scale_enemy_for_difficulty`, then the KILL_XP_FACTOR
 //!   trim, exactly as TS `createEnemy` does.
-//!
-//! Out of scope (Milestone 3, omitted — see the port report):
-//! Highspire/Thornwick/Cinderwatch/Overworld maps, side-dungeon floors
-//! and their town supplies, the sealed treasure vault, and the
-//! spore-heart / rime-circle / sealed-brazier set pieces. The
-//! sepulcher set piece (Floor 1) IS ported.
 //!
 //! Rust divergences from TS (deliberate, no behaviour change):
 //! - TS uses a module-global enemy id counter and the global seeded
@@ -931,6 +936,47 @@ fn set_tile(
     tiles[y as usize][x as usize] = t;
 }
 
+/// TS `placeSetPieceEnemy`: place a set-piece guard on the first spot
+/// that is plain floor (TS `setPieceTileOk`: never the spawn/return
+/// tile) and not already holding a set-piece enemy. At call time
+/// `enemies` contains only set-piece enemies, as in TS.
+#[allow(clippy::too_many_arguments)]
+fn place_set_piece_enemy(
+    tiles: &[Vec<Tile>],
+    enemies: &mut Vec<Enemy>,
+    enemy_seq: &mut u32,
+    arch: EnemyArchetype,
+    spots: &[(i32, i32)],
+    spawn_point: Pos,
+    return_point: Pos,
+    depth: i32,
+    tier: DifficultyTier,
+    cycle: u32,
+) {
+    for &(sx, sy) in spots {
+        let tile_ok = tiles
+            .get(sy as usize)
+            .and_then(|r| r.get(sx as usize))
+            .map_or(false, |t| t.kind == TileKind::Floor)
+            && !(sx == spawn_point.x && sy == spawn_point.y)
+            && !(sx == return_point.x && sy == return_point.y);
+        if tile_ok && !enemies.iter().any(|e| e.x == sx && e.y == sy) {
+            *enemy_seq += 1;
+            enemies.push(create_enemy(arch, sx, sy, depth, tier, cycle, *enemy_seq));
+            return;
+        }
+    }
+}
+
+/// TS `setTileMeta` (overworld): replace a tile wholesale and stamp its
+/// interact id + label.
+fn set_tile_meta(zone: &mut ZoneMap, x: i32, y: i32, kind: TileKind, interact_id: &str, label: &str) {
+    let mut t = make_tile(x, y, kind);
+    t.interact_id = Some(interact_id.to_string());
+    t.label = Some(label.to_string());
+    zone.tiles[y as usize][x as usize] = t;
+}
+
 /// 4-directional flood fill over walkable tiles (TS `getReachable`).
 pub fn reachable_positions(zone: &ZoneMap, sx: i32, sy: i32) -> HashSet<(i32, i32)> {
     reachable_in_tiles(&zone.tiles, zone.width, zone.height, sx, sy)
@@ -1018,15 +1064,79 @@ fn pool_for(depth: i32) -> &'static [EnemyArchetype] {
     }
 }
 
-/// Port of `generateDungeonFloor` for the main descent. Floor 1 is the
-/// M1 slice target; other depths generate through the same machinery
-/// (story bosses on 2/4/5, mini-bosses on 1/3) minus the Milestone 3
-/// pieces listed in the module docs.
+/// Branch of a side dungeon (TS `generateSideDungeonFloor`'s
+/// `'barrow' | 'mire' | 'frost'` string union).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideDungeonBranch {
+    Barrow,
+    Mire,
+    Frost,
+}
+
+impl SideDungeonBranch {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Barrow => "barrow",
+            Self::Mire => "mire",
+            Self::Frost => "frost",
+        }
+    }
+}
+
+/// TS `sidePools`: side dungeons draw from their own biome pools so each
+/// branch has a distinct roster.
+fn side_pool_for(branch: SideDungeonBranch) -> &'static [EnemyArchetype] {
+    match branch {
+        SideDungeonBranch::Barrow => &[
+            EnemyArchetype::CryptSkeleton,
+            EnemyArchetype::GraveHusk,
+            EnemyArchetype::BoneAcolyte,
+            EnemyArchetype::GraveHusk,
+            EnemyArchetype::CryptSkeleton,
+            EnemyArchetype::PlagueRat,
+        ],
+        SideDungeonBranch::Mire => &[
+            EnemyArchetype::BlightWeaver,
+            EnemyArchetype::SporeHulk,
+            EnemyArchetype::PlagueRat,
+            EnemyArchetype::BlightWeaver,
+            EnemyArchetype::SporeHulk,
+            EnemyArchetype::AshCultist,
+        ],
+        SideDungeonBranch::Frost => &[
+            EnemyArchetype::DreadWraith,
+            EnemyArchetype::RimeRevenant,
+            EnemyArchetype::RimeRevenant,
+            EnemyArchetype::IronGolem,
+            EnemyArchetype::ObsidianWarden,
+            EnemyArchetype::CinderWisp,
+        ],
+    }
+}
+
+/// Port of `generateDungeonFloor` for the main descent.
 pub fn generate_dungeon_floor(
     depth: i32,
     rng: &mut Rng,
     tier: DifficultyTier,
     cycle: u32,
+) -> ZoneMap {
+    generate_dungeon_floor_impl(depth, rng, tier, cycle, false, None)
+}
+
+/// The shared generator behind `generate_dungeon_floor` and
+/// `generate_side_dungeon_floor`. `skip_story_boss` / `side_branch` are
+/// TS's `options.skipStoryBoss` / `options.sideBranch`: side dungeons
+/// reuse this generator at an effective depth but must not inherit the
+/// main descent's story nodes, bosses or town items.
+#[allow(clippy::too_many_arguments)]
+fn generate_dungeon_floor_impl(
+    depth: i32,
+    rng: &mut Rng,
+    tier: DifficultyTier,
+    cycle: u32,
+    skip_story_boss: bool,
+    side_branch: Option<SideDungeonBranch>,
 ) -> ZoneMap {
     let width: i32 = 46;
     let height: i32 = 32;
@@ -1100,10 +1210,10 @@ pub fn generate_dungeon_floor(
         make_tile(spawn_point.x, spawn_point.y, TileKind::StairsUp);
     tiles[return_point.y as usize][return_point.x as usize] =
         make_tile(return_point.x, return_point.y, TileKind::StairsDown);
-    if depth == 5 {
+    if depth == 5 && !skip_story_boss {
         tiles[return_point.y as usize][return_point.x as usize].label =
             Some("Abyssal Descent (Unlocks after Malakor falls)".to_string());
-    } else if depth >= 6 {
+    } else if depth >= 6 && !skip_story_boss {
         tiles[return_point.y as usize][return_point.x as usize].label =
             Some(format!("Abyssal Stair (Floor {})", depth + 1));
     }
@@ -1135,7 +1245,10 @@ pub fn generate_dungeon_floor(
     }
 
     // --- story quest nodes (main descent only) ------------------------
-    if depth == 1 && rooms.len() > 2 {
+    // Story nodes belong only to the main descent: side dungeons reuse
+    // this generator at effective depths 1-3 and must not inherit them
+    // (TS gates all three on `!options?.skipStoryBoss`).
+    if depth == 1 && rooms.len() > 2 && !skip_story_boss {
         let cache = rooms[2];
         set_tile(
             &mut tiles,
@@ -1146,7 +1259,7 @@ pub fn generate_dungeon_floor(
             Some("contraband_cache".to_string()),
         );
     }
-    if (depth == 1 || depth == 2) && rooms.len() > 3 {
+    if (depth == 1 || depth == 2) && rooms.len() > 3 && !skip_story_boss {
         let herb = rooms[3];
         set_tile(
             &mut tiles,
@@ -1157,7 +1270,7 @@ pub fn generate_dungeon_floor(
             Some("herb_node".to_string()),
         );
     }
-    if depth == 3 && rooms.len() > 1 {
+    if depth == 3 && rooms.len() > 1 && !skip_story_boss {
         let mid = rooms[rooms.len() / 2];
         set_tile(
             &mut tiles,
@@ -1217,78 +1330,393 @@ pub fn generate_dungeon_floor(
         set_tile(&mut tiles, room.cx, room.cy, kind, None, None);
     }
 
-    // --- set piece: Whispering Sepulcher (Floor 1) --------------------
-    // Other set pieces are Milestone 3 (see module docs).
+    // --- set pieces (Phase 3): one hand-built room per floor ----------
+    // Kind by branch/depth, mirroring TS: mire -> Spore-Heart Chamber,
+    // frost -> Rime Circle, barrow / Floor 1 -> Whispering Sepulcher,
+    // main descent otherwise -> Sealed Brazier Hall. Set pieces only
+    // redecorate a spare room's interior, so the connectivity guarantee
+    // below still holds (never the first or final room).
     let mut set_piece_rooms: HashSet<usize> = HashSet::new();
     let mut enemies: Vec<Enemy> = Vec::new();
-    if depth == 1 {
-        let pick = rooms
-            .iter()
-            .enumerate()
-            .filter(|(idx, r)| {
-                !reserved.contains(idx) && !special_rooms.contains(idx) && r.w >= 6 && r.h >= 5
-            })
-            .max_by_key(|(_, r)| r.w * r.h)
-            .map(|(idx, r)| (idx, *r));
+    {
+        // TS setPieceTileOk: plain floor only, never spawn/return.
+        let tile_ok = |tiles: &[Vec<Tile>], x: i32, y: i32| -> bool {
+            tiles
+                .get(y as usize)
+                .and_then(|r| r.get(x as usize))
+                .map_or(false, |t| t.kind == TileKind::Floor)
+                && !(x == spawn_point.x && y == spawn_point.y)
+                && !(x == return_point.x && y == return_point.y)
+        };
+        // TS setPieceDecorOk: decor may also overwrite the generator's
+        // decorative pillars and torches — but never gameplay tiles.
+        let decor_ok = |tiles: &[Vec<Tile>], x: i32, y: i32| -> bool {
+            tiles
+                .get(y as usize)
+                .and_then(|r| r.get(x as usize))
+                .map_or(false, |t| {
+                    matches!(t.kind, TileKind::Floor | TileKind::Pillar | TileKind::Torch)
+                })
+                && !(x == spawn_point.x && y == spawn_point.y)
+                && !(x == return_point.x && y == return_point.y)
+        };
+        #[derive(Clone, Copy, PartialEq)]
+        enum SetPieceKind {
+            Sepulcher,
+            SporeHeart,
+            RimeCircle,
+            SealedBrazier,
+        }
+        let mut kind = match side_branch {
+            Some(SideDungeonBranch::Mire) => SetPieceKind::SporeHeart,
+            Some(SideDungeonBranch::Frost) => SetPieceKind::RimeCircle,
+            Some(SideDungeonBranch::Barrow) => SetPieceKind::Sepulcher,
+            None if depth == 1 => SetPieceKind::Sepulcher,
+            None => SetPieceKind::SealedBrazier,
+        };
+        // TS findSetPieceRoom: largest qualifying room (stable sort, so
+        // the earliest room wins area ties).
+        let find_room = |min_w: i32, min_h: i32| -> Option<(usize, Room)> {
+            let mut cands: Vec<(usize, Room)> = rooms
+                .iter()
+                .enumerate()
+                .filter(|(idx, r)| {
+                    !reserved.contains(idx)
+                        && !special_rooms.contains(idx)
+                        && r.w >= min_w
+                        && r.h >= min_h
+                })
+                .map(|(idx, r)| (idx, *r))
+                .collect();
+            cands.sort_by_key(|(_, r)| std::cmp::Reverse(r.w * r.h));
+            cands.into_iter().next()
+        };
+        let mut pick = if kind == SetPieceKind::SealedBrazier {
+            find_room(7, 6)
+        } else {
+            find_room(6, 5)
+        };
+        if pick.is_none() && kind == SetPieceKind::SealedBrazier {
+            kind = SetPieceKind::Sepulcher;
+            pick = find_room(6, 5);
+        }
         if let Some((idx, room)) = pick {
             set_piece_rooms.insert(idx);
-            paint_room_tint(&mut tiles, &room, "#3A362F");
-            let (rx0, ry0, rw, rh, cx, cy) = (room.x, room.y, room.w, room.h, room.cx, room.cy);
-            let decor_ok = |tiles: &[Vec<Tile>], x: i32, y: i32| {
-                let k = tiles[y as usize][x as usize].kind;
-                matches!(k, TileKind::Floor | TileKind::Pillar | TileKind::Torch)
-                    && !(x == spawn_point.x && y == spawn_point.y)
-                    && !(x == return_point.x && y == return_point.y)
-            };
-            let tile_ok = |tiles: &[Vec<Tile>], x: i32, y: i32| {
-                tiles[y as usize][x as usize].kind == TileKind::Floor
-                    && !(x == spawn_point.x && y == spawn_point.y)
-                    && !(x == return_point.x && y == return_point.y)
-            };
-            for (px, py) in [
-                (rx0 + 1, ry0 + 1),
-                (rx0 + rw - 2, ry0 + 1),
-                (rx0 + 1, ry0 + rh - 2),
-                (rx0 + rw - 2, ry0 + rh - 2),
-            ] {
-                if decor_ok(&tiles, px, py) {
-                    set_tile(&mut tiles, px, py, TileKind::Pillar, Some("Sepulcher Pillar"), None);
-                }
-            }
-            if tile_ok(&tiles, cx - 2, cy) {
-                set_tile(&mut tiles, cx - 2, cy, TileKind::Chest, Some("Stone Sarcophagus"), None);
-            }
-            if tile_ok(&tiles, cx + 2, cy) {
-                set_tile(&mut tiles, cx + 2, cy, TileKind::Chest, Some("Stone Sarcophagus"), None);
-            }
-            if tile_ok(&tiles, cx, cy + 1) {
-                set_tile(
-                    &mut tiles,
-                    cx,
-                    cy + 1,
-                    TileKind::LoreTablet,
-                    Some("Sepulcher Epitaph"),
-                    Some(format!("lore_floor_{depth}")),
-                );
-            }
-            if tile_ok(&tiles, cx - 2, cy + 1) {
-                set_tile(&mut tiles, cx - 2, cy + 1, TileKind::Trap, None, None);
-            }
-            if tile_ok(&tiles, cx + 2, cy + 1) {
-                set_tile(&mut tiles, cx + 2, cy + 1, TileKind::Trap, None, None);
-            }
-            for (arch, spots) in [
-                (EnemyArchetype::CryptSkeleton, [(cx - 1, cy - 1), (cx, cy - 1)]),
-                (EnemyArchetype::PlagueRat, [(cx + 1, cy - 1), (cx, cy + 2)]),
-            ] {
-                for (sx, sy) in spots {
-                    if tile_ok(&tiles, sx, sy)
-                        && !enemies.iter().any(|e| e.x == sx && e.y == sy)
-                    {
-                        let seq = next_enemy(&mut enemy_seq);
-                        enemies.push(create_enemy(arch, sx, sy, depth, tier, cycle, seq));
-                        break;
+            let (rx0, ry0, rw, rh, cx, cy) =
+                (room.x, room.y, room.w, room.h, room.cx, room.cy);
+            match kind {
+                SetPieceKind::Sepulcher => {
+                    // Whispering Sepulcher: pillar corners, twin
+                    // sarcophagi guarded by trapped approaches, and an
+                    // epitaph stele at the heart.
+                    paint_room_tint(&mut tiles, &room, "#3A362F");
+                    for (px, py) in [
+                        (rx0 + 1, ry0 + 1),
+                        (rx0 + rw - 2, ry0 + 1),
+                        (rx0 + 1, ry0 + rh - 2),
+                        (rx0 + rw - 2, ry0 + rh - 2),
+                    ] {
+                        if decor_ok(&tiles, px, py) {
+                            set_tile(
+                                &mut tiles,
+                                px,
+                                py,
+                                TileKind::Pillar,
+                                Some("Sepulcher Pillar"),
+                                None,
+                            );
+                        }
                     }
+                    if tile_ok(&tiles, cx - 2, cy) {
+                        set_tile(
+                            &mut tiles,
+                            cx - 2,
+                            cy,
+                            TileKind::Chest,
+                            Some("Stone Sarcophagus"),
+                            None,
+                        );
+                    }
+                    if tile_ok(&tiles, cx + 2, cy) {
+                        set_tile(
+                            &mut tiles,
+                            cx + 2,
+                            cy,
+                            TileKind::Chest,
+                            Some("Stone Sarcophagus"),
+                            None,
+                        );
+                    }
+                    if tile_ok(&tiles, cx, cy + 1) {
+                        set_tile(
+                            &mut tiles,
+                            cx,
+                            cy + 1,
+                            TileKind::LoreTablet,
+                            Some("Sepulcher Epitaph"),
+                            Some(format!("lore_floor_{depth}")),
+                        );
+                    }
+                    if tile_ok(&tiles, cx - 2, cy + 1) {
+                        set_tile(&mut tiles, cx - 2, cy + 1, TileKind::Trap, None, None);
+                    }
+                    if tile_ok(&tiles, cx + 2, cy + 1) {
+                        let trap_kind = if depth >= 2 {
+                            TileKind::DartTrap
+                        } else {
+                            TileKind::Trap
+                        };
+                        set_tile(&mut tiles, cx + 2, cy + 1, trap_kind, None, None);
+                    }
+                    let guards: [EnemyArchetype; 2] = match side_branch {
+                        Some(SideDungeonBranch::Barrow) => {
+                            [EnemyArchetype::GraveHusk, EnemyArchetype::CryptSkeleton]
+                        }
+                        _ => [EnemyArchetype::CryptSkeleton, EnemyArchetype::PlagueRat],
+                    };
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        guards[0],
+                        &[(cx - 1, cy - 1), (cx, cy - 1)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        guards[1],
+                        &[(cx + 1, cy - 1), (cx, cy + 2)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                }
+                SetPieceKind::SporeHeart => {
+                    // Spore-Heart Chamber: a cursed altar "heart" ringed
+                    // by live spore pools — cross the poison or skirt the
+                    // walls to make the pact.
+                    paint_room_tint(&mut tiles, &room, "#1F3D2B");
+                    set_tile(
+                        &mut tiles,
+                        cx,
+                        cy,
+                        TileKind::CursedAltar,
+                        Some("Spore-Heart Bloom"),
+                        None,
+                    );
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            if dx == 0 && dy == 0 {
+                                continue;
+                            }
+                            if tile_ok(&tiles, cx + dx, cy + dy) {
+                                set_tile(
+                                    &mut tiles,
+                                    cx + dx,
+                                    cy + dy,
+                                    TileKind::SporePool,
+                                    Some("Heart-Sap Pool (Poison Hazard)"),
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                    if tile_ok(&tiles, rx0 + 1, ry0 + 1) {
+                        set_tile(
+                            &mut tiles,
+                            rx0 + 1,
+                            ry0 + 1,
+                            TileKind::Chest,
+                            Some("Bloom-Husk Cache"),
+                            None,
+                        );
+                    }
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        EnemyArchetype::SporeHulk,
+                        &[(cx - 3, cy), (cx, cy - 3)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        EnemyArchetype::BlightWeaver,
+                        &[(cx + 3, cy), (cx, cy + 3)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                }
+                SetPieceKind::RimeCircle => {
+                    // Rime Circle: a rimebound cache ringed by frost
+                    // vents and pillars, watched by the revenants who
+                    // froze mid-ritual.
+                    paint_room_tint(&mut tiles, &room, "#22384A");
+                    for (px, py) in [
+                        (cx - 2, cy - 2),
+                        (cx + 2, cy - 2),
+                        (cx - 2, cy + 2),
+                        (cx + 2, cy + 2),
+                    ] {
+                        if decor_ok(&tiles, px, py) {
+                            set_tile(
+                                &mut tiles,
+                                px,
+                                py,
+                                TileKind::Pillar,
+                                Some("Rime-Circle Pillar"),
+                                None,
+                            );
+                        }
+                    }
+                    for (hx, hy) in [(cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)] {
+                        if tile_ok(&tiles, hx, hy) {
+                            set_tile(
+                                &mut tiles,
+                                hx,
+                                hy,
+                                TileKind::FrostVent,
+                                Some("Rime-Circle Vent (Chill Hazard)"),
+                                None,
+                            );
+                        }
+                    }
+                    set_tile(
+                        &mut tiles,
+                        cx,
+                        cy,
+                        TileKind::Chest,
+                        Some("Rimebound Cache"),
+                        None,
+                    );
+                    if tile_ok(&tiles, cx, cy + 2) {
+                        set_tile(
+                            &mut tiles,
+                            cx,
+                            cy + 2,
+                            TileKind::LoreTablet,
+                            Some("Rime-Circle Litany"),
+                            Some(format!("lore_floor_{depth}")),
+                        );
+                    }
+                    if tile_ok(&tiles, cx - 1, cy - 2) {
+                        set_tile(&mut tiles, cx - 1, cy - 2, TileKind::DartTrap, None, None);
+                    }
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        EnemyArchetype::RimeRevenant,
+                        &[(cx - 3, cy), (cx - 2, cy - 1)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        EnemyArchetype::DreadWraith,
+                        &[(cx + 3, cy), (cx + 2, cy + 1)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                }
+                SetPieceKind::SealedBrazier => {
+                    // Sealed Brazier Hall (main descent): a treasure
+                    // nook in the corner, its vault door bound to three
+                    // Seal Braziers spread across the hall. Lighting all
+                    // three (App: interactWithTile) grinds the seal open.
+                    paint_room_tint(&mut tiles, &room, "#3A2E28");
+                    set_tile(
+                        &mut tiles,
+                        rx0 + 1,
+                        ry0 + 1,
+                        TileKind::Chest,
+                        Some("Sealed Reliquary Cache"),
+                        None,
+                    );
+                    set_tile(&mut tiles, rx0 + 2, ry0, TileKind::Wall, None, None);
+                    set_tile(
+                        &mut tiles,
+                        rx0 + 2,
+                        ry0 + 1,
+                        TileKind::VaultDoor,
+                        Some("Brazier-Sealed Door"),
+                        Some("seal_door".to_string()),
+                    );
+                    set_tile(&mut tiles, rx0, ry0 + 2, TileKind::Wall, None, None);
+                    set_tile(&mut tiles, rx0 + 1, ry0 + 2, TileKind::Wall, None, None);
+                    set_tile(&mut tiles, rx0 + 2, ry0 + 2, TileKind::Wall, None, None);
+                    for (sx, sy) in [
+                        (rx0 + rw - 2, ry0 + 1),
+                        (rx0 + rw - 2, ry0 + rh - 2),
+                        (rx0 + 1, ry0 + rh - 2),
+                    ] {
+                        if decor_ok(&tiles, sx, sy) {
+                            set_tile(
+                                &mut tiles,
+                                sx,
+                                sy,
+                                TileKind::Brazier,
+                                Some("Seal Brazier"),
+                                Some("seal_brazier".to_string()),
+                            );
+                        }
+                    }
+                    let guards: [EnemyArchetype; 2] = if depth >= 6 {
+                        [EnemyArchetype::ObsidianWarden, EnemyArchetype::DreadWraith]
+                    } else if depth >= 4 {
+                        [EnemyArchetype::IronGolem, EnemyArchetype::ShadowStalker]
+                    } else {
+                        [EnemyArchetype::CryptSkeleton, EnemyArchetype::BoneAcolyte]
+                    };
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        guards[0],
+                        &[(cx + 1, cy), (cx, cy)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
+                    place_set_piece_enemy(
+                        &tiles,
+                        &mut enemies,
+                        &mut enemy_seq,
+                        guards[1],
+                        &[(cx - 1, cy + 1), (cx, cy + 1)],
+                        spawn_point,
+                        return_point,
+                        depth,
+                        tier,
+                        cycle,
+                    );
                 }
             }
         }
@@ -1391,12 +1819,17 @@ pub fn generate_dungeon_floor(
     }
 
     // --- enemies -------------------------------------------------------
-    let pool = pool_for(depth);
+    // Side dungeons draw from their own biome pools (TS sidePools);
+    // otherwise the depth pool (Abyss pool at depth >= 6).
+    let pool: &[EnemyArchetype] = match side_branch {
+        Some(branch) => side_pool_for(branch),
+        None => pool_for(depth),
+    };
     let mut rare_count = 0;
     let mut roaming_randboss_spawned = false;
     for (r_idx, room) in rooms.iter().skip(1).enumerate() {
         let is_final = r_idx == rooms.len() - 2;
-        if is_final && (depth == 2 || depth == 4 || depth == 5) {
+        if !skip_story_boss && is_final && (depth == 2 || depth == 4 || depth == 5) {
             let boss = match depth {
                 2 => EnemyArchetype::BossBoneCantor,
                 4 => EnemyArchetype::BossAshenInquisitor,
@@ -1414,22 +1847,64 @@ pub fn generate_dungeon_floor(
             ));
             continue;
         }
-        if is_final && (depth == 1 || depth == 3) {
-            let (arch, rank, boss_name, title) = if depth == 1 {
-                (
-                    EnemyArchetype::GoblinSkirmisher,
-                    EnemyRank::Rare,
-                    "Skrag, Reliquary Gatekeeper",
-                    "Mini-Boss · Gatekeeper",
-                )
-            } else {
-                (
-                    EnemyArchetype::BlightWeaver,
-                    EnemyRank::Randboss,
-                    "Vaelkor, Blight-Weaver Warden",
-                    "Mini-Boss · Floor Warden",
-                )
-            };
+        if !skip_story_boss && is_final && depth >= 6 && depth % 2 == 0 {
+            // Abyss echo boss: a story boss from the descent, scaled up.
+            let archs = [
+                EnemyArchetype::BossBoneCantor,
+                EnemyArchetype::BossAshenInquisitor,
+                EnemyArchetype::BossMalakor,
+            ];
+            let arch = archs[((depth / 2) % 3) as usize];
+            let seq = next_enemy(&mut enemy_seq);
+            let mut warden = create_enemy(
+                arch,
+                (room.x + 1).max(room.cx - 1),
+                room.cy,
+                depth,
+                tier,
+                cycle,
+                seq,
+            );
+            let mult = 1.0 + (depth - 5) as f64 * 0.24;
+            warden.name = format!("Abyssal Echo · {}", warden.name);
+            warden.hp = round(warden.hp as f64 * mult);
+            warden.max_hp = warden.hp;
+            warden.atk = round(warden.atk as f64 * (1.0 + (depth - 5) as f64 * 0.14));
+            warden.def += (depth - 4) / 2;
+            warden.xp_reward = round(warden.xp_reward as f64 * mult);
+            warden.gold_reward = round(warden.gold_reward as f64 * mult);
+            enemies.push(warden);
+            continue;
+        }
+        if !skip_story_boss
+            && is_final
+            && (depth == 1 || depth == 3 || (depth >= 7 && depth % 2 == 1))
+        {
+            // Named floor mini-boss wardens on non-major-boss floors
+            // (Floors 1, 3, and odd Abyss floors).
+            let (arch, rank, boss_name, title): (EnemyArchetype, EnemyRank, String, &str) =
+                if depth == 1 {
+                    (
+                        EnemyArchetype::GoblinSkirmisher,
+                        EnemyRank::Rare,
+                        "Skrag, Reliquary Gatekeeper".to_string(),
+                        "Mini-Boss · Gatekeeper",
+                    )
+                } else if depth == 3 {
+                    (
+                        EnemyArchetype::BlightWeaver,
+                        EnemyRank::Randboss,
+                        "Vaelkor, Blight-Weaver Warden".to_string(),
+                        "Mini-Boss · Floor Warden",
+                    )
+                } else {
+                    (
+                        EnemyArchetype::ObsidianWarden,
+                        EnemyRank::Randboss,
+                        format!("Abyssal Harbinger (Depth {depth})"),
+                        "Mini-Boss · Floor Warden",
+                    )
+                };
             let seq = next_enemy(&mut enemy_seq);
             let mut mini = promote_enemy_rank(
                 create_enemy(arch, (room.x + 1).max(room.cx - 1), room.cy, depth, tier, cycle, seq),
@@ -1437,7 +1912,7 @@ pub fn generate_dungeon_floor(
                 rank,
                 rng,
             );
-            mini.name = boss_name.to_string();
+            mini.name = boss_name;
             mini.rank_title = Some(title.to_string());
             enemies.push(mini);
             continue;
@@ -1470,6 +1945,201 @@ pub fn generate_dungeon_floor(
                     rare_count += 1;
                 }
                 enemies.push(created);
+            }
+        }
+    }
+
+    // --- sealed high-risk treasure vault (depth >= 2, 88%) ------------
+    // Finds an uncarved 7x5 wall block, seals it behind a vault door,
+    // and links it to the nearest existing floor with a short corridor.
+    if depth >= 2 && rand_f(rng) < 0.88 {
+        let mut floor_points: Vec<(i32, i32)> = Vec::new();
+        for y in 2..height - 2 {
+            for x in 2..width - 2 {
+                if tiles[y as usize][x as usize].kind == TileKind::Floor {
+                    floor_points.push((x, y));
+                }
+            }
+        }
+        #[derive(Clone, Copy)]
+        struct VaultSpot {
+            vx: i32,
+            vy: i32,
+            door_x: i32,
+            door_y: i32,
+            link_x: i32,
+            link_y: i32,
+            dist: i32,
+        }
+        let mut best_vault: Option<VaultSpot> = None;
+        for vy in 2..=height - 7 {
+            for vx in 2..=width - 9 {
+                let mut all_wall = true;
+                'scan: for py in (vy - 1)..=(vy + 5) {
+                    for px in (vx - 1)..=(vx + 7) {
+                        if tiles[py as usize][px as usize].kind != TileKind::Wall {
+                            all_wall = false;
+                            break 'scan;
+                        }
+                    }
+                }
+                if !all_wall {
+                    continue;
+                }
+                // Nearest existing floor tile to one of the 4 cardinal
+                // door midpoints, approached along a safe outward axis.
+                let door_midpoints = [
+                    (vx + 3, vy, 0, -1),
+                    (vx + 3, vy + 4, 0, 1),
+                    (vx, vy + 2, -1, 0),
+                    (vx + 6, vy + 2, 1, 0),
+                ];
+                for (door_x, door_y, ox, oy) in door_midpoints {
+                    let (out_x, out_y) = (door_x + ox, door_y + oy);
+                    if out_x < 1 || out_x >= width - 1 || out_y < 1 || out_y >= height - 1 {
+                        continue;
+                    }
+                    for &(fx, fy) in &floor_points {
+                        let safe_l = if oy != 0 {
+                            fx < vx || fx > vx + 6 || (fy - (vy + 2)).signum() == oy
+                        } else {
+                            fy < vy || fy > vy + 4 || (fx - (vx + 3)).signum() == ox
+                        };
+                        if !safe_l {
+                            continue;
+                        }
+                        let dist = (fx - out_x).abs() + (fy - out_y).abs();
+                        if dist >= 1 && dist <= 7 && best_vault.map_or(true, |b| dist < b.dist) {
+                            best_vault = Some(VaultSpot {
+                                vx,
+                                vy,
+                                door_x,
+                                door_y,
+                                link_x: fx,
+                                link_y: fy,
+                                dist,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(v) = best_vault {
+            let (vx, vy) = (v.vx, v.vy);
+            for ry in (vy + 1)..=(vy + 3) {
+                for rx in (vx + 1)..=(vx + 5) {
+                    let mut t = make_tile(rx, ry, TileKind::Floor);
+                    t.color = "#4D3D2C".to_string();
+                    tiles[ry as usize][rx as usize] = t;
+                }
+            }
+            tiles[v.door_y as usize][v.door_x as usize] =
+                make_tile(v.door_x, v.door_y, TileKind::VaultDoor);
+            // Carve the approach corridor along the safe outward axis
+            // first, without breaching the vault walls.
+            let horiz_door = v.door_x == vx || v.door_x == vx + 6;
+            let mut cx = v.door_x
+                + if v.door_x == vx {
+                    -1
+                } else if v.door_x == vx + 6 {
+                    1
+                } else {
+                    0
+                };
+            let mut cy = v.door_y
+                + if v.door_y == vy {
+                    -1
+                } else if v.door_y == vy + 4 {
+                    1
+                } else {
+                    0
+                };
+            while cx != v.link_x || cy != v.link_y {
+                let inside_vault_box =
+                    cx >= vx && cx <= vx + 6 && cy >= vy && cy <= vy + 4;
+                if !inside_vault_box
+                    && cx >= 1
+                    && cx < width - 1
+                    && cy >= 1
+                    && cy < height - 1
+                    && tiles[cy as usize][cx as usize].kind == TileKind::Wall
+                {
+                    tiles[cy as usize][cx as usize] = make_tile(cx, cy, TileKind::Floor);
+                }
+                if horiz_door {
+                    if cy != v.link_y {
+                        cy += if cy < v.link_y { 1 } else { -1 };
+                    } else if cx != v.link_x {
+                        cx += if cx < v.link_x { 1 } else { -1 };
+                    }
+                } else {
+                    if cx != v.link_x {
+                        cx += if cx < v.link_x { 1 } else { -1 };
+                    } else if cy != v.link_y {
+                        cy += if cy < v.link_y { 1 } else { -1 };
+                    }
+                }
+            }
+            // Vault chests + relic + guard(s).
+            set_tile(
+                &mut tiles,
+                vx + 1,
+                vy + 1,
+                TileKind::Chest,
+                Some("Vault Relic Chest"),
+                Some("vault_chest".to_string()),
+            );
+            set_tile(
+                &mut tiles,
+                vx + 5,
+                vy + 1,
+                TileKind::Chest,
+                Some("Vault Relic Chest"),
+                Some("vault_chest".to_string()),
+            );
+            item_seq += 1;
+            loot.push(GroundLoot {
+                id: format!("gl_vault_{depth}"),
+                x: vx + 3,
+                y: vy + 1,
+                gold: Some(25 + depth * 12),
+                item: Some(generate_procedural_item_local(
+                    depth + 1,
+                    Some(if depth >= 4 {
+                        ItemRarity::Epic
+                    } else {
+                        ItemRarity::Rare
+                    }),
+                    rng,
+                    item_seq,
+                )),
+            });
+            // P1: the guard is created at the floor's own depth and only
+            // becomes a randboss in the Abyss (depth >= 6), so a vault
+            // guard can no longer out-stat the floor's boss.
+            let guard_arch = pool[rand_below(rng, pool.len() as i32) as usize];
+            let seq = next_enemy(&mut enemy_seq);
+            let main_guard = promote_enemy_rank(
+                create_enemy(guard_arch, vx + 3, vy + 2, depth, tier, cycle, seq),
+                depth,
+                if depth >= 6 {
+                    EnemyRank::Randboss
+                } else {
+                    EnemyRank::Rare
+                },
+                rng,
+            );
+            enemies.push(main_guard);
+            if depth >= 3 {
+                let wing_arch = pool[rand_below(rng, pool.len() as i32) as usize];
+                let seq = next_enemy(&mut enemy_seq);
+                let wing_guard = promote_enemy_rank(
+                    create_enemy(wing_arch, vx + 2, vy + 3, depth, tier, cycle, seq),
+                    depth,
+                    EnemyRank::Rare,
+                    rng,
+                );
+                enemies.push(wing_guard);
             }
         }
     }
@@ -1540,9 +2210,9 @@ pub fn generate_dungeon_floor(
     // The 3 Blacksmith pieces + Heartcoal, as ground loot on spaced-out
     // walkable floor tiles away from the entrance. Guaranteed finds,
     // not drop chances: the town loop must be completable on a first
-    // clear of the floor. (TS gates this on the main descent; side
-    // branches are Milestone 3 and never reach this function.)
-    if depth == 1 {
+    // clear of the floor. (TS gates this on `depth === 1 &&
+    // !options?.sideBranch` — the main descent only.)
+    if depth == 1 && side_branch.is_none() {
         const TAGS: [&str; 4] = [
             "blacksmith_anvil",
             "blacksmith_bellows",
@@ -1629,6 +2299,744 @@ pub fn generate_dungeon_floor(
         return_point,
     }
 }
+
+// ------------------------------------------------------------ town maps
+
+/// Port of `createHighspireMap`.
+pub fn create_highspire_map() -> ZoneMap {
+    let layout: [&str; 17] = [
+        "################################",
+        "#║....║.....######......║.....║#",
+        "#..*..║..‡..#....#..*...║..*...#",
+        "#...........+....+.............#",
+        "#..#######..######..#######....#",
+        "#..#.....#....░░....#.....#....#",
+        "#..#.....+░░░░░░░...+.....#....#",
+        "#..#######....░░....#######....#",
+        "#.............░░...............#",
+        "Ω░░░░░░░░░░░░░◎░░░░░░░░░░░░░*..#",
+        "#......Π.Π....░░....Π.Π........#",
+        "#..*..........░░..........┼....#",
+        "#.....║.......░░.......║.......#",
+        "#.............░░...............#",
+        "#......*......>>.......║.......#",
+        "#.............░░...............#",
+        "################################",
+    ];
+    let npcs = vec![
+        npc("lyra", 14, 2, "#60A5FA", "Archivist Lyra", "Keeper of Glyphs"),
+        npc("corvus", 5, 6, "#F59E0B", "Magistrate Corvus", "Citadel Arbiter"),
+        npc("kaelen", 23, 6, "#EF4444", "Guildmaster Kaelen", "Warden of the Descent"),
+        npc("orin", 21, 11, "#C084FC", "Relic Appraiser Orin", "Master Artificer"),
+        roaming_npc("tomas", 10, 8, "#93C5FD", "Page Tomas", "Citadel Page"),
+    ];
+    let mut town = build_town_from_ascii(
+        ZoneId::Highspire,
+        "Highspire Citadel",
+        "Upper Stone Bastion",
+        &layout,
+        npcs,
+        Pos::new(14, 11),
+        Pos::new(14, 13),
+    );
+    town.critters = Some(vec![make_critter(CritterKind::CinderCrow, 25, 2, 1)]);
+    town
+}
+
+/// Port of `createThornwickMap`.
+pub fn create_thornwick_map() -> ZoneMap {
+    let layout: [&str; 17] = [
+        "############################",
+        "#≈≈≈♣..#####....#####..♣≈≈≈#",
+        "#≈≈....#...#....#...#...≈≈≈#",
+        "#≈.....#...+....+...#....≈≈#",
+        "#♣.....#####.░░.#####...♣..#",
+        "#............░░........┼...#",
+        "#..♣....*....░░....*.......#",
+        "#............░░............#",
+        "Ω░░░░░░░░░░░░░░░.....‡.....#",
+        "#......Π.Π...░░............#",
+        "#..*.........░░.....*...♣..#",
+        "#.....#####..░░..#####.....#",
+        "#.....#...#..░░..#...#..≈≈≈#",
+        "#≈≈...#...+..░░..+...#..≈≈≈#",
+        "#≈≈≈..#####......#####..≈≈≈#",
+        "#≈≈≈≈♣.......✿........♣≈≈≈≈#",
+        "############################",
+    ];
+    let npcs = vec![
+        npc("sylva", 16, 2, "#34D399", "Elder Sylva", "Mire-Druid & Lorekeeper"),
+        npc("bram", 9, 2, "#FBBF24", "Tinker Bram", "Relic Scavenger"),
+        roaming_npc("fenwick", 18, 9, "#4ADE80", "Fenwick the Fisher", "Fen Fisher"),
+    ];
+    let mut zone = build_town_from_ascii(
+        ZoneId::Thornwick,
+        "Thornwick Fen",
+        "Stilt-Timber Bog Settlement",
+        &layout,
+        npcs,
+        Pos::new(2, 8),
+        Pos::new(2, 8),
+    );
+    zone.tiles[8][0].interact_id = Some("gate_to_overworld".to_string());
+    zone.tiles[8][0].label = Some("Gate to Silverwood Vale".to_string());
+    zone.critters = Some(vec![
+        make_critter(CritterKind::FenFrog, 20, 7, 1),
+        make_critter(CritterKind::FenFrog, 12, 14, 2),
+    ]);
+    zone
+}
+
+/// Port of `createCinderwatchMap`.
+pub fn create_cinderwatch_map() -> ZoneMap {
+    let layout: [&str; 17] = [
+        "##############################",
+        "#~~~║......########......║~~~#",
+        "#~~........#......#.........~#",
+        "#.....*....+......+....*.....#",
+        "#..######..########..######..#",
+        "#..#....#.....░░.....#....#..#",
+        "#..#....+░░░░░░░░░░░░+....#..#",
+        "#..######.....░░.....######..#",
+        "#.............░░.......┼.....#",
+        "#.....*.......░░.....*.......#",
+        "#......‡......░░.............#",
+        "#............░░░░............#",
+        "#..║.........░░░░........║...#",
+        "#.............░░.............#",
+        "#......~......░░......~......#",
+        "#~~~..........░░..........~~~#",
+        "##############Ω###############",
+    ];
+    let npcs = vec![
+        npc("halda", 6, 6, "#FB923C", "Forgemistress Halda", "Master Runesmith"),
+        npc("darek", 23, 6, "#EF4444", "Captain Darek", "Rift Sentinel"),
+        roaming_npc("sella", 10, 10, "#FDE68A", "Sella the Quartermaster", "Bastion Quartermaster"),
+    ];
+    let mut zone = build_town_from_ascii(
+        ZoneId::Cinderwatch,
+        "Cinderwatch Bastion",
+        "Volcanic Ridge Garrison",
+        &layout,
+        npcs,
+        Pos::new(14, 14),
+        Pos::new(14, 14),
+    );
+    zone.tiles[16][14].interact_id = Some("gate_to_overworld".to_string());
+    zone.tiles[16][14].label = Some("Ridge Gate to Silverwood Vale".to_string());
+    zone.critters = Some(vec![make_critter(CritterKind::CinderCrow, 8, 10, 1)]);
+    zone
+}
+
+/// Port of `createOverworldMap`: the Silverwood Vale, with its four
+/// town gates, four dungeon portals, waystone, lore stele and POIs.
+pub fn create_overworld_map(rng: &mut Rng, tier: DifficultyTier, cycle: u32) -> ZoneMap {
+    let layout: [&str; 26] = [
+        "################################################",
+        "#♣♣♣♣....♣♣♣.......♣♣≈≈♣♣......Ω........♣♣♣♣♣♣♣#",
+        "#♣♣......♣♣....◈.....≈≈........░.......♣♣...♣♣♣#",
+        "#♣...♣♣......♣♣♣.....≈≈........░............>.♣#",
+        "#♣...♣..░░>░░░░░░░░░░░≈≈░░░░░░░░░░░░░░░░░░░░░..#",
+        "#♣......░............≈≈........░......♣♣....♣..#",
+        "#....♣..░...♣♣.......≈≈...♣....░...............#",
+        "#♣......░............≈≈........░...♣♣.....♣♣...#",
+        "#.......░.....♣♣.....≈≈........░...............#",
+        "#..♣....░............≈≈♣.......░.......♣.......#",
+        "#.......░.....☼......≈≈........░...............#",
+        "#.......░............≈≈........░..........♣....#",
+        "Ω░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░Ω",
+        "#.......░............≈≈........░...............#",
+        "#..♣....░.....‡......≈≈........░...######......#",
+        "#.......░............≈≈...♣....░...#....#..♣...#",
+        "#.......░.....♣......≈≈........░...+..$.#......#",
+        "#...♣...░............≈≈........░...######......#",
+        "#.......░............≈≈........░...............#",
+        "#♣......░..♣♣........≈≈...♣....░....♣♣.....♣...#",
+        "#.......░............≈≈........░...............#",
+        "#..♣....░.......♣....≈≈........░.........%%....#",
+        "#.......░░░░░░░░░░░░.≈≈....░░░░░░░░░░░░░░░>.✿..#",
+        "#♣..........♣.......>≈≈........░..........%....#",
+        "#♣♣..♣♣.............♣≈≈...♣♣...░.....♣♣.......♣#",
+        "################################Ω###############",
+    ];
+    let npcs = vec![npc(
+        "rowan",
+        15,
+        11,
+        "#34D399",
+        "Rowan the Wayfarer",
+        "Outrider Scout",
+    )];
+    let mut zone = build_town_from_ascii(
+        ZoneId::Overworld,
+        "Silverwood Vale",
+        "Frontier Overworld · Crossroads of the Realm",
+        &layout,
+        npcs,
+        Pos::new(2, 12),
+        Pos::new(45, 12),
+    );
+    zone.is_town = false;
+    zone.depth = 0;
+
+    // Crisp interactIds & labels for every gate & dungeon portal.
+    set_tile_meta(&mut zone, 0, 12, TileKind::GateCity, "gate_to_oakhaven", "Oakhaven Outpost West Gate");
+    set_tile_meta(&mut zone, 47, 12, TileKind::GateCity, "gate_to_highspire", "Highspire Citadel Causeway Gate");
+    set_tile_meta(&mut zone, 31, 1, TileKind::GateCity, "gate_to_cinderwatch", "Cinderwatch Bastion Ridge Gate");
+    set_tile_meta(&mut zone, 32, 25, TileKind::GateCity, "gate_to_thornwick", "Thornwick Fen Timber Gate");
+
+    set_tile_meta(&mut zone, 10, 4, TileKind::StairsDown, "to_barrow_1", "Whispering Barrow Entrance (Lv 2–4)");
+    set_tile_meta(&mut zone, 44, 3, TileKind::StairsDown, "to_frost_1", "Frostpeak Cavern Entrance (Lv 5–8)");
+    set_tile_meta(&mut zone, 42, 22, TileKind::StairsDown, "to_mire_1", "Fungal Hollow Entrance (Lv 3–5)");
+    set_tile_meta(&mut zone, 20, 23, TileKind::StairsDown, "to_dungeon_1", "Sunken Reliquary Outer Descent (Lv 1–2)");
+
+    set_tile_meta(&mut zone, 15, 2, TileKind::Waystone, "waystone_overworld", "Silverwood Elven Waystone");
+    set_tile_meta(&mut zone, 14, 14, TileKind::LoreTablet, "lore_overworld_vale", "Silverbridge Crossroads Stele");
+
+    // Phase 3 POIs: quiet landmarks that reward a second look.
+    set_tile_meta(&mut zone, 13, 18, TileKind::Pillar, "poi_standing_stones", "Standing Stones of the Vale");
+    set_tile_meta(&mut zone, 15, 18, TileKind::Pillar, "poi_standing_stones", "Standing Stones of the Vale");
+    set_tile_meta(&mut zone, 14, 19, TileKind::Pillar, "poi_standing_stones", "Standing Stones of the Vale");
+    set_tile_meta(&mut zone, 14, 20, TileKind::Pillar, "poi_standing_stones", "Standing Stones of the Vale");
+    set_tile_meta(&mut zone, 33, 19, TileKind::Brazier, "poi_hunter_camp", "Hunter's Cold Camp");
+    set_tile_meta(&mut zone, 24, 13, TileKind::LoreTablet, "lore_roadside_shrine", "Roadside Shrine of the Vale");
+
+    // Phase 3 ambient life: Vale wildlife (non-combat, flees the player).
+    zone.critters = Some(vec![
+        make_critter(CritterKind::ValeRabbit, 6, 16, 1),
+        make_critter(CritterKind::ValeRabbit, 18, 20, 2),
+        make_critter(CritterKind::AshFox, 27, 8, 3),
+        make_critter(CritterKind::CinderCrow, 30, 5, 4),
+    ]);
+    set_tile_meta(&mut zone, 14, 10, TileKind::Brazier, "brazier_overworld", "Wayfarer Campfire");
+    set_tile_meta(&mut zone, 38, 16, TileKind::Chest, "overworld_satchel_chest", "Brigand Tollhouse Chest");
+    set_tile_meta(&mut zone, 44, 22, TileKind::HerbNode, "herb_node", "Pale Nightbloom");
+    zone.tiles[21][41] = make_tile(41, 21, TileKind::SporePool);
+    zone.tiles[21][42] = make_tile(42, 21, TileKind::SporePool);
+    zone.tiles[23][42] = make_tile(42, 23, TileKind::SporePool);
+    zone.tiles[5][43] = make_tile(43, 5, TileKind::FrostVent);
+    zone.tiles[5][45] = make_tile(45, 5, TileKind::FrostVent);
+
+    // Ensure the Silverstream bridges & approaches are cleanly walkable road.
+    for (x, y) in [
+        (21, 4),
+        (22, 4),
+        (21, 12),
+        (22, 12),
+        (19, 23),
+        (19, 22),
+        (20, 22),
+        (32, 24),
+        (32, 23),
+        (32, 22),
+        (31, 2),
+        (31, 3),
+        (44, 4),
+    ] {
+        zone.tiles[y as usize][x as usize] = make_tile(x, y, TileKind::Road);
+    }
+    zone.tiles[2][15] = make_tile(15, 2, TileKind::Waystone);
+    zone.tiles[2][15].interact_id = Some("waystone_overworld".to_string());
+    zone.tiles[2][15].label = Some("Silverwood Elven Waystone".to_string());
+    zone.tiles[3][15] = make_tile(15, 3, TileKind::Floor);
+
+    // Populate overworld encounters (kept clear of the Oakhaven west
+    // road spawn). Audit Tier 1: the brigand captain is NOT rank-promoted
+    // (a rare promotion on an elite archetype out-statted most dungeon
+    // bosses); he stays a named tollhouse threat at honest stats.
+    let mut enemy_seq: u32 = 1;
+    let next_enemy = |seq: &mut u32| {
+        *seq += 1;
+        *seq
+    };
+    let mut brigand_captain = create_enemy(
+        EnemyArchetype::ShadowStalker,
+        37,
+        16,
+        2,
+        tier,
+        cycle,
+        next_enemy(&mut enemy_seq),
+    );
+    brigand_captain.id = "overworld_brigand_captain".to_string();
+    brigand_captain.name = "Harlan, Silverbridge Brigand".to_string();
+    brigand_captain.rank_title = Some("Rare Outlaw · Tollhouse".to_string());
+
+    zone.enemies = vec![
+        create_enemy(EnemyArchetype::PlagueRat, 9, 17, 1, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::GoblinSkirmisher, 11, 7, 1, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::CryptSkeleton, 12, 5, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::GoblinSkirmisher, 28, 17, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::GoblinSkirmisher, 34, 16, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        brigand_captain,
+        create_enemy(EnemyArchetype::BlightWeaver, 39, 21, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::PlagueRat, 37, 23, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::IronGolem, 40, 5, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+        create_enemy(EnemyArchetype::CinderWisp, 35, 6, 2, tier, cycle, next_enemy(&mut enemy_seq)),
+    ];
+
+    zone.loot = vec![
+        GroundLoot {
+            id: "gl_overworld_camp".to_string(),
+            x: 17,
+            y: 11,
+            gold: Some(18),
+            item: Some(create_consumable_local(ConsumableKind::HealPotion, 1, 1)),
+        },
+        GroundLoot {
+            id: "gl_overworld_ridge".to_string(),
+            x: 38,
+            y: 6,
+            gold: Some(30),
+            item: Some(generate_procedural_item_local(3, None, rng, 2)),
+        },
+    ];
+
+    zone
+}
+
+// ---------------------------------------------------------- side dungeons
+
+struct SideBossMeta {
+    id: &'static str,
+    name: &'static str,
+    title: &'static str,
+    arch: EnemyArchetype,
+    chest_label: &'static str,
+    hp_tune: f64,
+    atk_tune: f64,
+}
+
+struct SideFloorMeta {
+    name: &'static str,
+    subtitle: &'static str,
+    up_label: &'static str,
+    down_label: Option<&'static str>,
+    boss: Option<SideBossMeta>,
+}
+
+/// TS `generateSideDungeonFloor` titles table (incl. SIDE_BOSS_TUNE).
+fn side_floor_meta(branch: SideDungeonBranch, floor: i32) -> Option<SideFloorMeta> {
+    match (branch, floor) {
+        (SideDungeonBranch::Barrow, 1) => Some(SideFloorMeta {
+            name: "Whispering Barrow · Upper Vaults",
+            subtitle: "Barrow Floor 1 · Spectral Crypts",
+            up_label: "Ascend to Silverwood Vale",
+            down_label: Some("Descent to Morvath’s Crypt (Floor 2)"),
+            boss: None,
+        }),
+        (SideDungeonBranch::Barrow, 2) => Some(SideFloorMeta {
+            name: "Whispering Barrow · Morvath’s Crypt",
+            subtitle: "Barrow Floor 2 · Wight-Lord Sanctum",
+            up_label: "Ascend to Upper Vaults (Floor 1)",
+            down_label: None,
+            boss: Some(SideBossMeta {
+                id: "boss_morvath",
+                name: "Arch-Wight Morvath",
+                title: "Barrow Sovereign · Side Boss",
+                arch: EnemyArchetype::DreadWraith,
+                chest_label: "Morvath’s Barrow Chest",
+                hp_tune: 2.05,
+                atk_tune: 1.38,
+            }),
+        }),
+        (SideDungeonBranch::Mire, 1) => Some(SideFloorMeta {
+            name: "Fungal Hollow · Spore Galleries",
+            subtitle: "Hollow Floor 1 · Bioluminescent Mire",
+            up_label: "Ascend to Silverwood Vale",
+            down_label: Some("Descent to Mycelial Heart (Floor 2)"),
+            boss: None,
+        }),
+        (SideDungeonBranch::Mire, 2) => Some(SideFloorMeta {
+            name: "Fungal Hollow · Mycelial Heart",
+            subtitle: "Hollow Floor 2 · Spore-Matron Lair",
+            up_label: "Ascend to Spore Galleries (Floor 1)",
+            down_label: None,
+            boss: Some(SideBossMeta {
+                id: "boss_vexis",
+                name: "Spore-Matron Vexis",
+                title: "Broodmother of the Mire · Side Boss",
+                arch: EnemyArchetype::BlightWeaver,
+                chest_label: "Mycelial Relic Chest",
+                hp_tune: 2.05,
+                atk_tune: 1.32,
+            }),
+        }),
+        (SideDungeonBranch::Frost, 1) => Some(SideFloorMeta {
+            name: "Frostpeak Cavern · Glacial Drift",
+            subtitle: "Frostpeak Floor 1 · Rime Tunnels",
+            up_label: "Ascend to Silverwood Vale",
+            down_label: Some("Descent to Shattered Chasm (Floor 2)"),
+            boss: None,
+        }),
+        (SideDungeonBranch::Frost, 2) => Some(SideFloorMeta {
+            name: "Frostpeak Cavern · Shattered Chasm",
+            subtitle: "Frostpeak Floor 2 · Frozen Rune Vaults",
+            up_label: "Ascend to Glacial Drift (Floor 1)",
+            down_label: Some("Descent to Ashen Caldera (Floor 3)"),
+            boss: None,
+        }),
+        (SideDungeonBranch::Frost, 3) => Some(SideFloorMeta {
+            name: "Ashen Caldera · Magma Heart",
+            subtitle: "Caldera Floor 3 · Crucible Core",
+            up_label: "Ascend to Shattered Chasm (Floor 2)",
+            down_label: None,
+            boss: Some(SideBossMeta {
+                id: "boss_kaelthar",
+                name: "Ignis-Warden Kaelthar",
+                title: "Lord of the Caldera · Side Boss",
+                arch: EnemyArchetype::ObsidianWarden,
+                chest_label: "Caldera Relic Hoard",
+                hp_tune: 1.0,
+                atk_tune: 0.78,
+            }),
+        }),
+        _ => None,
+    }
+}
+
+/// Port of `generateSideDungeonFloor`: reuses the dungeon generator at
+/// an effective depth (barrow 1+f, mire 2+f, frost 3+f) with story
+/// content skipped, then re-themes the floor: branch name/labels, lore
+/// re-tagging, biome hazard bias, the floor-1 town supply, and — on the
+/// terminal floor — a relic chest guarded by the named side boss.
+pub fn generate_side_dungeon_floor(
+    branch: SideDungeonBranch,
+    floor: i32,
+    rng: &mut Rng,
+    tier: DifficultyTier,
+    cycle: u32,
+) -> ZoneMap {
+    let effective_depth = match branch {
+        SideDungeonBranch::Barrow => 1 + floor,
+        SideDungeonBranch::Mire => 2 + floor,
+        SideDungeonBranch::Frost => 3 + floor,
+    };
+    let mut zone = generate_dungeon_floor_impl(effective_depth, rng, tier, cycle, true, Some(branch));
+    let zone_id = match branch {
+        SideDungeonBranch::Barrow => ZoneId::Barrow(floor.max(0) as u32),
+        SideDungeonBranch::Mire => ZoneId::Mire(floor.max(0) as u32),
+        SideDungeonBranch::Frost => ZoneId::Frost(floor.max(0) as u32),
+    };
+    zone.id = zone_id;
+
+    let meta = side_floor_meta(branch, floor);
+    if let Some(meta) = &meta {
+        zone.name = meta.name.to_string();
+        zone.subtitle = meta.subtitle.to_string();
+        let (sx, sy) = (zone.spawn_point.x, zone.spawn_point.y);
+        zone.tiles[sy as usize][sx as usize].label = Some(meta.up_label.to_string());
+        if let Some(down_label) = meta.down_label {
+            let (rx, ry) = (zone.return_point.x, zone.return_point.y);
+            if zone.tiles[ry as usize][rx as usize].kind == TileKind::StairsDown {
+                zone.tiles[ry as usize][rx as usize].label = Some(down_label.to_string());
+            }
+        }
+    }
+
+    // Re-tag lore tablets & bias side-dungeon hazards to their biome.
+    for y in 0..zone.height {
+        for x in 0..zone.width {
+            let kind = zone.tiles[y as usize][x as usize].kind;
+            if kind == TileKind::LoreTablet {
+                zone.tiles[y as usize][x as usize].interact_id =
+                    Some(format!("lore_{}", branch.as_str()));
+            }
+            if branch == SideDungeonBranch::Mire
+                && matches!(kind, TileKind::FrostVent | TileKind::EmberCrust)
+            {
+                zone.tiles[y as usize][x as usize] = make_tile(x, y, TileKind::SporePool);
+            }
+            if branch == SideDungeonBranch::Frost
+                && floor <= 2
+                && kind == TileKind::EmberCrust
+            {
+                zone.tiles[y as usize][x as usize] = make_tile(x, y, TileKind::FrostVent);
+            }
+        }
+    }
+
+    // ElfStory Reborn Phase 1: Floor 1 of each branch carries a
+    // guaranteed Oakhaven town supply (barrow_1 -> barrow_iron,
+    // mire_1 -> mire_timber, frost_1 -> frost_coal) on the walkable
+    // floor tile farthest from the entrance, so the player chooses
+    // their Run-2+ zone because of what Oakhaven needs.
+    if floor == 1 {
+        let supply_tag = match branch {
+            SideDungeonBranch::Barrow => "barrow_iron",
+            SideDungeonBranch::Mire => "mire_timber",
+            SideDungeonBranch::Frost => "frost_coal",
+        };
+        let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+        for l in &zone.loot {
+            occupied.insert((l.x, l.y));
+        }
+        for e in &zone.enemies {
+            occupied.insert((e.x, e.y));
+        }
+        occupied.insert((zone.spawn_point.x, zone.spawn_point.y));
+        occupied.insert((zone.return_point.x, zone.return_point.y));
+        let mut best: Option<(i32, i32)> = None;
+        let mut best_dist = -1;
+        for y in 0..zone.height {
+            for x in 0..zone.width {
+                let t = &zone.tiles[y as usize][x as usize];
+                if t.kind != TileKind::Floor || !t.walkable {
+                    continue;
+                }
+                if occupied.contains(&(x, y)) {
+                    continue;
+                }
+                let d = (x - zone.spawn_point.x)
+                    .abs()
+                    .max((y - zone.spawn_point.y).abs());
+                if d > best_dist {
+                    best_dist = d;
+                    best = Some((x, y));
+                }
+            }
+        }
+        if let Some((bx, by)) = best {
+            zone.loot.push(GroundLoot {
+                id: format!("town_loot_{supply_tag}"),
+                x: bx,
+                y: by,
+                gold: None,
+                item: Some(create_quest_item_local(supply_tag, 7000 + floor.max(0) as u32)),
+            });
+        }
+    }
+
+    // Terminal floor: swap stairs_down into a guarded relic chest with
+    // the branch's sole named side boss standing watch.
+    if let Some(meta) = &meta {
+        if let Some(boss_meta) = &meta.boss {
+            let (rx, ry) = (zone.return_point.x, zone.return_point.y);
+            let mut chest = make_tile(rx, ry, TileKind::Chest);
+            chest.label = Some(boss_meta.chest_label.to_string());
+            chest.interact_id = Some(format!("{}_boss_chest", zone_id.to_string_id()));
+            zone.tiles[ry as usize][rx as usize] = chest;
+
+            // Find a free walkable tile near the hoard chest so the boss
+            // never stacks on another enemy or wall.
+            let mut bx = (rx - 1).max(2);
+            let mut by = ry;
+            let mut placed = false;
+            'search: for radius in 1..=5 {
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let (cx, cy) = (rx + dx, ry + dy);
+                        let walkable = zone
+                            .tiles
+                            .get(cy as usize)
+                            .and_then(|r| r.get(cx as usize))
+                            .map_or(false, |t| t.walkable);
+                        if walkable
+                            && !(cx == zone.spawn_point.x && cy == zone.spawn_point.y)
+                            && !zone.enemies.iter().any(|e| e.x == cx && e.y == cy)
+                        {
+                            bx = cx;
+                            by = cy;
+                            placed = true;
+                            break 'search;
+                        }
+                    }
+                }
+            }
+            if !placed {
+                zone.enemies.retain(|e| !(e.x == bx && e.y == by));
+            }
+
+            let mut boss = promote_enemy_rank(
+                create_enemy(boss_meta.arch, bx, by, effective_depth + 1, tier, cycle, 9000),
+                effective_depth + 1,
+                EnemyRank::Randboss,
+                rng,
+            );
+            // Side bosses are tuned explicitly (TS SIDE_BOSS_TUNE) so
+            // none of them out-stats the final boss.
+            let new_hp = round(boss.hp as f64 * boss_meta.hp_tune);
+            let new_max_hp = round(boss.max_hp as f64 * boss_meta.hp_tune);
+            boss.hp = new_hp;
+            boss.max_hp = new_max_hp;
+            boss.atk = round(boss.atk as f64 * boss_meta.atk_tune).max(1);
+            boss.id = boss_meta.id.to_string();
+            boss.name = boss_meta.name.to_string();
+            boss.rank_title = Some(boss_meta.title.to_string());
+            boss.is_boss = Some(true);
+            zone.enemies.push(boss);
+        }
+    }
+
+    zone
+}
+
+// ------------------------------------------------------------ zone access
+
+/// Port of `generateZoneById`: static zones build directly; dungeon
+/// floors generate on demand (main descent depth >= 1, barrow/mire
+/// floors 1-2, frost floors 1-3); anything else is `None`.
+pub fn generate_zone_by_id(
+    id: ZoneId,
+    rng: &mut Rng,
+    tier: DifficultyTier,
+    cycle: u32,
+) -> Option<ZoneMap> {
+    match id {
+        ZoneId::Oakhaven => Some(create_oakhaven_map()),
+        ZoneId::Overworld => Some(create_overworld_map(rng, tier, cycle)),
+        ZoneId::Highspire => Some(create_highspire_map()),
+        ZoneId::Thornwick => Some(create_thornwick_map()),
+        ZoneId::Cinderwatch => Some(create_cinderwatch_map()),
+        ZoneId::Dungeon(n) if n >= 1 => {
+            Some(generate_dungeon_floor(n as i32, rng, tier, cycle))
+        }
+        ZoneId::Barrow(n) if (1..=2).contains(&n) => Some(generate_side_dungeon_floor(
+            SideDungeonBranch::Barrow,
+            n as i32,
+            rng,
+            tier,
+            cycle,
+        )),
+        ZoneId::Mire(n) if (1..=2).contains(&n) => Some(generate_side_dungeon_floor(
+            SideDungeonBranch::Mire,
+            n as i32,
+            rng,
+            tier,
+            cycle,
+        )),
+        ZoneId::Frost(n) if (1..=3).contains(&n) => Some(generate_side_dungeon_floor(
+            SideDungeonBranch::Frost,
+            n as i32,
+            rng,
+            tier,
+            cycle,
+        )),
+        _ => None,
+    }
+}
+
+/// Port of `createInitialZones`: the 5 static zones plus main-descent
+/// Floors 1-5, in TS record order.
+pub fn create_initial_zones(
+    rng: &mut Rng,
+    tier: DifficultyTier,
+    cycle: u32,
+) -> Vec<(ZoneId, ZoneMap)> {
+    vec![
+        (ZoneId::Oakhaven, create_oakhaven_map()),
+        (ZoneId::Overworld, create_overworld_map(rng, tier, cycle)),
+        (ZoneId::Highspire, create_highspire_map()),
+        (ZoneId::Thornwick, create_thornwick_map()),
+        (ZoneId::Cinderwatch, create_cinderwatch_map()),
+        (ZoneId::Dungeon(1), generate_dungeon_floor(1, rng, tier, cycle)),
+        (ZoneId::Dungeon(2), generate_dungeon_floor(2, rng, tier, cycle)),
+        (ZoneId::Dungeon(3), generate_dungeon_floor(3, rng, tier, cycle)),
+        (ZoneId::Dungeon(4), generate_dungeon_floor(4, rng, tier, cycle)),
+        (ZoneId::Dungeon(5), generate_dungeon_floor(5, rng, tier, cycle)),
+    ]
+}
+
+/// Port of TS `ZoneContextBrief`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZoneContextBrief {
+    pub lore: String,
+    pub tactical: String,
+    pub recommended: String,
+}
+
+/// Port of `getZoneContext(zoneId, depth)`.
+pub fn get_zone_context(zone: ZoneId, depth: i32) -> ZoneContextBrief {
+    fn brief(lore: &str, tactical: &str, recommended: &str) -> ZoneContextBrief {
+        ZoneContextBrief {
+            lore: lore.to_string(),
+            tactical: tactical.to_string(),
+            recommended: recommended.to_string(),
+        }
+    }
+    match zone {
+        ZoneId::Oakhaven => brief(
+            "A sunny timber village built around the outer Reliquary stair. Torin’s forge and Mira’s apothecary keep delvers supplied.",
+            "Safe Haven · Step out the West Gate (Ω) onto Silverwood Vale Overworld, or descend >> into the Reliquary.",
+            "Town Sanctuary",
+        ),
+        ZoneId::Overworld => brief(
+            "Twilight forest roads, Silverstream crossings, and ruined watchtowers linking Oakhaven, Thornwick Fen, Highspire, and Cinderwatch.",
+            "Overworld · Speak with Rowan at Silverbridge, hunt brigands, attune the forest Waystone, or enter 4 dungeon regions.",
+            "Lv 1–6 Overworld",
+        ),
+        ZoneId::Highspire => brief(
+            "Marble sanctuary perched above the sunken vaults. Guildmaster Kaelen and Archivist Lyra coordinate expeditions to Floor 5.",
+            "Safe Haven · Temper gear, trade Relics with Orin, and attune the Whispering Bell.",
+            "Citadel Sanctuary",
+        ),
+        ZoneId::Thornwick => brief(
+            "A stilt-timber bog hamlet tucked beside the Fungal Hollow. Elder Sylva tends the mire wards while Tinker Bram salvages deep curios.",
+            "Safe Haven · Trade with Tinker Bram or help Elder Sylva cleanse Fungal Hollow to the east.",
+            "Fen Sanctuary",
+        ),
+        ZoneId::Cinderwatch => brief(
+            "An iron-bound basalt garrison guarding the Frostpeak & Caldera passes. Forgemistress Halda tempers volcanic steel.",
+            "Safe Haven · Gear up with Halda’s Runesmith stock or take bounties from Captain Darek.",
+            "Ridge Sanctuary",
+        ),
+        ZoneId::Barrow(_) => brief(
+            "Ancient pre-Citadel barrow tombs haunted by skeletal guardians and Arch-Wight Morvath.",
+            "Side Dungeon (2 Floors) · Defeat Arch-Wight Morvath on Floor 2 for Barrow Relics and Captain Darek’s bounty.",
+            "Lv 2–4",
+        ),
+        ZoneId::Mire(_) => brief(
+            "Bioluminescent subterranean caverns choked with toxic spore pools beneath Thornwick Fen.",
+            "Side Dungeon (2 Floors) · Watch Blight Spore Pools and slay Spore-Matron Vexis on Floor 2.",
+            "Lv 3–5",
+        ),
+        ZoneId::Frost(_) => brief(
+            "Rime-crusted crystal galleries descending straight into the molten veins of the Ashen Caldera.",
+            "Side Dungeon (3 Floors) · Brave Frost Vents & Shock Runes to reach Ignis-Warden Kaelthar on Floor 3.",
+            "Lv 5–8",
+        ),
+        ZoneId::Dungeon(_) => match depth {
+            1 => brief(
+                "Cold limestone arches scarred by decades of treasure hunters and restless bone-sentinels.",
+                "Watch skeletal archer lines of fire and spike snares (Agility 3+ spots traps automatically).",
+                "Lv 1–2",
+            ),
+            2 => brief(
+                "Echoing ossuary galleries where Bone Cantors weave protective wards over the dead.",
+                "Sealed Treasure Vaults appear here—expect Rare skill-using guards behind amber doors.",
+                "Lv 2–4",
+            ),
+            3 => brief(
+                "Basalt forge-halls warmed by deep fissures, home to Stone Golems and the Whispering Bell.",
+                "Step off red Ground Slam tiles when Golems wind up, or break them with Stuns.",
+                "Lv 4–6",
+            ),
+            4 => brief(
+                "The Inquisitor Crucible burns with cinder wards and high-ranking Reliquary champions.",
+                "Unlocks Skill Capstones at Lv 6+. Temper equipment to +2/+3 before entering Floor 5.",
+                "Lv 6–8",
+            ),
+            5 => brief(
+                "Black glass columns frame the Obsidian Sanctum where Malakor guards the Ashen Glyph.",
+                "Boss Floor: Malakor, Sovereign of Cinder awaits. Bring full Runes, Infusions & Draughts.",
+                "Lv 8+",
+            ),
+            _ => ZoneContextBrief {
+                lore: format!(
+                    "Untamed reality fractures across Abyssal Depth {depth}, teeming with empowered champions."
+                ),
+                tactical: format!(
+                    "Endless Abyss (Floor {depth}): Randbosses and Relic-tier Sealed Vaults scale with depth."
+                ),
+                recommended: format!("Lv {}+", (depth + 4).max(9)),
+            },
+        },
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -1799,4 +3207,307 @@ mod tests {
         assert_eq!(vaelen.xp_reward, 81);
         assert_eq!(vaelen.is_boss, Some(true));
     }
+    // ------------------------------------------------ M3 part 2 tests
+
+    fn assert_map_invariants(zone: &ZoneMap) {
+        let at = |p: Pos| &zone.tiles[p.y as usize][p.x as usize];
+        assert!(
+            at(zone.spawn_point).walkable,
+            "{}: spawn {:?} not walkable",
+            zone.name,
+            zone.spawn_point
+        );
+        assert!(
+            at(zone.return_point).walkable,
+            "{}: return {:?} not walkable",
+            zone.name,
+            zone.return_point
+        );
+        for l in &zone.loot {
+            let t = &zone.tiles[l.y as usize][l.x as usize];
+            assert!(
+                t.walkable,
+                "{}: loot {} at ({},{}) on non-walkable {:?}",
+                zone.name,
+                l.id,
+                l.x,
+                l.y,
+                t.kind
+            );
+        }
+        for e in &zone.enemies {
+            let t = &zone.tiles[e.y as usize][e.x as usize];
+            assert!(
+                t.walkable,
+                "{}: enemy {} at ({},{}) on non-walkable {:?}",
+                zone.name,
+                e.name,
+                e.x,
+                e.y,
+                t.kind
+            );
+        }
+    }
+
+    fn tile_at(zone: &ZoneMap, x: i32, y: i32) -> &Tile {
+        &zone.tiles[y as usize][x as usize]
+    }
+
+    #[test]
+    fn initial_zones_generate_with_walkable_spawn_return_and_contents() {
+        let mut rng = Rng::new(42);
+        let zones = create_initial_zones(&mut rng, DifficultyTier::Standard, 0);
+        assert_eq!(zones.len(), 10);
+        let ids: Vec<ZoneId> = zones.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                ZoneId::Oakhaven,
+                ZoneId::Overworld,
+                ZoneId::Highspire,
+                ZoneId::Thornwick,
+                ZoneId::Cinderwatch,
+                ZoneId::Dungeon(1),
+                ZoneId::Dungeon(2),
+                ZoneId::Dungeon(3),
+                ZoneId::Dungeon(4),
+                ZoneId::Dungeon(5),
+            ]
+        );
+        for (_, zone) in &zones {
+            assert_map_invariants(zone);
+        }
+        // Main-descent floors: spawn is stairs_up, return is stairs_down.
+        for (_, zone) in zones.iter().skip(5) {
+            assert_eq!(
+                tile_at(zone, zone.spawn_point.x, zone.spawn_point.y).kind,
+                TileKind::StairsUp,
+                "{} spawn should be stairs_up",
+                zone.name
+            );
+            assert_eq!(
+                tile_at(zone, zone.return_point.x, zone.return_point.y).kind,
+                TileKind::StairsDown,
+                "{} return should be stairs_down",
+                zone.name
+            );
+        }
+    }
+
+    #[test]
+    fn town_maps_have_expected_npcs_spawns_and_gates() {
+        let mut rng = Rng::new(7);
+        let highspire = create_highspire_map();
+        assert_eq!((highspire.width, highspire.height), (32, 17));
+        assert!(highspire.is_town);
+        let names: Vec<&str> = highspire.npcs.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(names, vec!["lyra", "corvus", "kaelen", "orin", "tomas"]);
+        assert_eq!(highspire.spawn_point, Pos::new(14, 11));
+        assert_map_invariants(&highspire);
+
+        let thornwick = create_thornwick_map();
+        assert_eq!((thornwick.width, thornwick.height), (28, 17));
+        let names: Vec<&str> = thornwick.npcs.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(names, vec!["sylva", "bram", "fenwick"]);
+        assert_eq!(
+            thornwick.tiles[8][0].interact_id.as_deref(),
+            Some("gate_to_overworld")
+        );
+        assert_map_invariants(&thornwick);
+
+        let cinderwatch = create_cinderwatch_map();
+        assert_eq!((cinderwatch.width, cinderwatch.height), (30, 17));
+        let names: Vec<&str> = cinderwatch.npcs.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(names, vec!["halda", "darek", "sella"]);
+        assert_eq!(
+            cinderwatch.tiles[16][14].interact_id.as_deref(),
+            Some("gate_to_overworld")
+        );
+        assert_map_invariants(&cinderwatch);
+
+        let overworld = create_overworld_map(&mut rng, DifficultyTier::Standard, 0);
+        assert_eq!((overworld.width, overworld.height), (48, 26));
+        assert!(!overworld.is_town);
+        assert_map_invariants(&overworld);
+        let gate = |x: i32, y: i32| overworld.tiles[y as usize][x as usize].interact_id.as_deref();
+        assert_eq!(gate(0, 12), Some("gate_to_oakhaven"));
+        assert_eq!(gate(47, 12), Some("gate_to_highspire"));
+        assert_eq!(gate(31, 1), Some("gate_to_cinderwatch"));
+        assert_eq!(gate(32, 25), Some("gate_to_thornwick"));
+        assert_eq!(gate(10, 4), Some("to_barrow_1"));
+        assert_eq!(gate(44, 3), Some("to_frost_1"));
+        assert_eq!(gate(42, 22), Some("to_mire_1"));
+        assert_eq!(gate(20, 23), Some("to_dungeon_1"));
+        assert_eq!(gate(15, 2), Some("waystone_overworld"));
+        assert_eq!(gate(14, 14), Some("lore_overworld_vale"));
+        assert_eq!(tile_at(&overworld, 10, 4).kind, TileKind::StairsDown);
+        assert_eq!(tile_at(&overworld, 0, 12).kind, TileKind::GateCity);
+        // Named overworld threat, honest stats (no rank promotion).
+        let captain = overworld
+            .enemies
+            .iter()
+            .find(|e| e.id == "overworld_brigand_captain")
+            .expect("brigand captain present");
+        assert_eq!(captain.name, "Harlan, Silverbridge Brigand");
+        assert_eq!(captain.is_boss, None);
+        assert_eq!(overworld.enemies.len(), 10);
+        assert_eq!(overworld.loot.len(), 2);
+    }
+
+    #[test]
+    fn side_dungeon_floor1_carries_its_town_supply() {
+        let cases = [
+            (SideDungeonBranch::Barrow, "barrow_iron"),
+            (SideDungeonBranch::Mire, "mire_timber"),
+            (SideDungeonBranch::Frost, "frost_coal"),
+        ];
+        for (branch, tag) in cases {
+            let mut rng = Rng::new(99);
+            let zone = generate_side_dungeon_floor(branch, 1, &mut rng, DifficultyTier::Standard, 0);
+            assert_map_invariants(&zone);
+            assert_eq!(
+                tile_at(&zone, zone.spawn_point.x, zone.spawn_point.y).kind,
+                TileKind::StairsUp
+            );
+            assert_eq!(
+                tile_at(&zone, zone.return_point.x, zone.return_point.y).kind,
+                TileKind::StairsDown,
+                "{} floor 1 must have a descent",
+                zone.name
+            );
+            let supply = zone
+                .loot
+                .iter()
+                .find(|l| l.id == format!("town_loot_{tag}"))
+                .unwrap_or_else(|| panic!("{} floor 1 missing supply {tag}", zone.name));
+            let item = supply.item.as_ref().expect("supply carries an item");
+            assert_eq!(item.category, ItemCategory::Quest);
+            assert_eq!(item.quest_tag.as_deref(), Some(tag));
+            // No main-descent town pieces leak into side floors.
+            assert!(
+                !zone.loot.iter().any(|l| {
+                    l.item
+                        .as_ref()
+                        .and_then(|i| i.quest_tag.as_deref())
+                        .map_or(false, |t| t.starts_with("blacksmith_") || t == "heartcoal")
+                }),
+                "{} floor 1 must not carry blacksmith pieces",
+                zone.name
+            );
+        }
+    }
+
+    #[test]
+    fn side_dungeon_terminal_floors_have_named_boss_and_chest() {
+        let cases = [
+            (SideDungeonBranch::Barrow, 2, "Arch-Wight Morvath", "boss_morvath"),
+            (SideDungeonBranch::Mire, 2, "Spore-Matron Vexis", "boss_vexis"),
+            (SideDungeonBranch::Frost, 3, "Ignis-Warden Kaelthar", "boss_kaelthar"),
+        ];
+        for (branch, floor, name, id) in cases {
+            let mut rng = Rng::new(1234);
+            let zone = generate_side_dungeon_floor(branch, floor, &mut rng, DifficultyTier::Standard, 0);
+            assert_map_invariants(&zone);
+            let boss = zone
+                .enemies
+                .iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("{} missing boss {id}", zone.name));
+            assert_eq!(boss.name, name);
+            assert_eq!(boss.is_boss, Some(true));
+            // The return tile became the boss's relic chest (no descent).
+            let ret = tile_at(&zone, zone.return_point.x, zone.return_point.y);
+            assert_eq!(ret.kind, TileKind::Chest);
+            assert!(ret.interact_id.as_deref().map_or(false, |i| i.ends_with("_boss_chest")));
+        }
+        // Frost floor 2 is a mid floor: stairs_down present, no boss.
+        let mut rng = Rng::new(5);
+        let frost2 = generate_side_dungeon_floor(SideDungeonBranch::Frost, 2, &mut rng, DifficultyTier::Standard, 0);
+        assert_map_invariants(&frost2);
+        assert_eq!(
+            tile_at(&frost2, frost2.return_point.x, frost2.return_point.y).kind,
+            TileKind::StairsDown
+        );
+        assert!(!frost2.enemies.iter().any(|e| e.is_boss == Some(true)));
+    }
+
+    #[test]
+    fn generate_zone_by_id_respects_ts_ranges() {
+        let mut rng = Rng::new(3);
+        assert!(generate_zone_by_id(ZoneId::Barrow(1), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Barrow(2), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Barrow(3), &mut rng, DifficultyTier::Standard, 0).is_none());
+        assert!(generate_zone_by_id(ZoneId::Mire(2), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Mire(3), &mut rng, DifficultyTier::Standard, 0).is_none());
+        assert!(generate_zone_by_id(ZoneId::Frost(3), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Frost(4), &mut rng, DifficultyTier::Standard, 0).is_none());
+        assert!(generate_zone_by_id(ZoneId::Dungeon(1), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Dungeon(9), &mut rng, DifficultyTier::Standard, 0).is_some());
+        assert!(generate_zone_by_id(ZoneId::Oakhaven, &mut rng, DifficultyTier::Standard, 0).is_some());
+        let overworld = generate_zone_by_id(ZoneId::Overworld, &mut rng, DifficultyTier::Standard, 0).unwrap();
+        assert_eq!(overworld.id, ZoneId::Overworld);
+        let barrow = generate_zone_by_id(ZoneId::Barrow(1), &mut rng, DifficultyTier::Standard, 0).unwrap();
+        assert_eq!(barrow.id, ZoneId::Barrow(1));
+        assert!(barrow.name.starts_with("Whispering Barrow"));
+    }
+
+    #[test]
+    fn main_descent_bosses_and_town_item_guardrail() {
+        let mut rng = Rng::new(2024);
+        let f2 = generate_dungeon_floor(2, &mut rng, DifficultyTier::Standard, 0);
+        assert!(
+            f2.enemies.iter().any(|e| e.name == "Vaelen, Bone Cantor" && e.is_boss == Some(true)),
+            "floor 2 must contain the Bone Cantor"
+        );
+        let f5 = generate_dungeon_floor(5, &mut rng, DifficultyTier::Standard, 0);
+        assert!(
+            f5.enemies
+                .iter()
+                .any(|e| e.name == "Malakor, Sovereign of Cinder" && e.is_boss == Some(true)),
+            "floor 5 must contain Malakor"
+        );
+        // Abyss echo boss on even floors >= 6; harbinger on odd floors >= 7.
+        let f6 = generate_dungeon_floor(6, &mut rng, DifficultyTier::Standard, 0);
+        assert!(
+            f6.enemies.iter().any(|e| e.name.starts_with("Abyssal Echo · ")),
+            "floor 6 must contain an Abyssal Echo boss"
+        );
+        let f7 = generate_dungeon_floor(7, &mut rng, DifficultyTier::Standard, 0);
+        assert!(
+            f7.enemies.iter().any(|e| e.name == "Abyssal Harbinger (Depth 7)"),
+            "floor 7 must contain an Abyssal Harbinger"
+        );
+        // Guardrail: the blacksmith pieces + Heartcoal exist ONLY on
+        // dungeon_1 (and never on side-dungeon floor 1, which maps to
+        // effective depth 2 anyway).
+        for depth in 2..=7 {
+            let z = generate_dungeon_floor(depth, &mut rng, DifficultyTier::Standard, 0);
+            assert!(
+                !z.loot.iter().any(|l| {
+                    l.item
+                        .as_ref()
+                        .and_then(|i| i.quest_tag.as_deref())
+                        .map_or(false, |t| t.starts_with("blacksmith_") || t == "heartcoal")
+                }),
+                "floor {depth} must not carry town pieces"
+            );
+            assert_map_invariants(&z);
+        }
+    }
+
+    #[test]
+    fn zone_context_matches_ts_table() {
+        let oakhaven = get_zone_context(ZoneId::Oakhaven, 0);
+        assert_eq!(oakhaven.recommended, "Town Sanctuary");
+        let barrow = get_zone_context(ZoneId::Barrow(1), 0);
+        assert_eq!(barrow.recommended, "Lv 2–4");
+        let f1 = get_zone_context(ZoneId::Dungeon(1), 1);
+        assert_eq!(f1.recommended, "Lv 1–2");
+        let f5 = get_zone_context(ZoneId::Dungeon(5), 5);
+        assert!(f5.tactical.contains("Malakor"));
+        let abyss = get_zone_context(ZoneId::Dungeon(9), 9);
+        assert_eq!(abyss.recommended, "Lv 13+");
+        assert!(abyss.lore.contains("Depth 9"));
+    }
+
 }

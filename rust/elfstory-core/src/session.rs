@@ -29,7 +29,7 @@ use crate::town::{
 use crate::types::*;
 #[cfg(test)]
 use crate::town::BLACKSMITH_GATED_ITEM_NAME;
-use crate::world::{create_oakhaven_map, generate_dungeon_floor};
+use crate::world::create_oakhaven_map;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -282,7 +282,7 @@ impl GameSession {
         match kind {
             TileKind::StairsDown => return self.transition_down(),
             TileKind::StairsUp => return self.transition_up(),
-            TileKind::GateCity => return self.transition_down(),
+            TileKind::GateCity => return self.transition_gate(),
             _ => {}
         }
         self.enemy_turn();
@@ -432,6 +432,20 @@ impl GameSession {
     }
 
     fn transition_down(&mut self) -> SessionEvent {
+        // Portal tiles carry their destination in interact_id (TS
+        // overworld portals: to_barrow_1 / to_frost_1 / to_mire_1 /
+        // to_dungeon_1).
+        let tile = self.tile_at(self.player.x, self.player.y);
+        if let Some(t) = &tile {
+            if let Some(dest) = t.interact_id.as_deref().and_then(ZoneId::parse) {
+                return self.enter_zone(dest, true);
+            }
+            if let Some(id_str) = t.interact_id.as_deref().and_then(|s| s.strip_prefix("to_")) {
+                if let Some(dest) = ZoneId::parse(id_str) {
+                    return self.enter_zone(dest, true);
+                }
+            }
+        }
         let next = match self.current {
             ZoneId::Oakhaven => ZoneId::Dungeon(1),
             ZoneId::Dungeon(n) => ZoneId::Dungeon(n + 1),
@@ -445,9 +459,13 @@ impl GameSession {
 
     fn transition_up(&mut self) -> SessionEvent {
         match self.current {
-            ZoneId::Dungeon(1) | ZoneId::Barrow(1) | ZoneId::Mire(1) | ZoneId::Frost(1) => {
-                self.return_to_oakhaven(false)
-            }
+            // Main descent: Wake/banking path back to Oakhaven.
+            ZoneId::Dungeon(1) => self.return_to_oakhaven(false),
+            // Side branches exit onto the overworld beside their portals
+            // (TS); carried supplies stay unbanked until Oakhaven.
+            ZoneId::Barrow(1) => self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(10, 5)), false),
+            ZoneId::Mire(1) => self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(42, 21)), false),
+            ZoneId::Frost(1) => self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(44, 4)), false),
             ZoneId::Dungeon(n) => self.enter_zone(ZoneId::Dungeon(n - 1), false),
             ZoneId::Barrow(n) => self.enter_zone(ZoneId::Barrow(n - 1), false),
             ZoneId::Mire(n) => self.enter_zone(ZoneId::Mire(n - 1), false),
@@ -456,20 +474,71 @@ impl GameSession {
         }
     }
 
+    /// Surface travel gates (TS App gate_city graph). Entry positions are
+    /// the TS transition targets.
+    fn transition_gate(&mut self) -> SessionEvent {
+        match self.current {
+            ZoneId::Oakhaven => {
+                self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(2, 12)), false)
+            }
+            ZoneId::Highspire => {
+                self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(45, 12)), false)
+            }
+            ZoneId::Thornwick => {
+                self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(32, 24)), false)
+            }
+            ZoneId::Cinderwatch => {
+                self.enter_zone_at(ZoneId::Overworld, Some(Pos::new(31, 2)), false)
+            }
+            ZoneId::Overworld => {
+                let tile = self.tile_at(self.player.x, self.player.y);
+                match tile.and_then(|t| t.interact_id) {
+                    Some(id) if id == "gate_to_thornwick" => {
+                        self.enter_zone(ZoneId::Thornwick, false)
+                    }
+                    Some(id) if id == "gate_to_cinderwatch" => {
+                        self.enter_zone(ZoneId::Cinderwatch, false)
+                    }
+                    Some(id) if id == "gate_to_highspire" => {
+                        if self.flags.citadel_access {
+                            self.enter_zone_at(
+                                ZoneId::Highspire,
+                                Some(Pos::new(1, 9)),
+                                false,
+                            )
+                        } else {
+                            self.say("The Highspire Causeway Gate is sealed. Earn a Citadel Pass from Vance or Vex in Oakhaven.");
+                            SessionEvent::None
+                        }
+                    }
+                    // gate_to_oakhaven (and any unmarked overworld gate)
+                    _ => self.arrive_oakhaven(Pos::new(1, 7)),
+                }
+            }
+            _ => SessionEvent::None,
+        }
+    }
+
+    /// Arriving in Oakhaven from the road: bank carried town items and run
+    /// the return tick when a delve actually happened (anti-cheese guard
+    /// lives in town_return_tick); otherwise just step through the gate.
+    fn arrive_oakhaven(&mut self, entry: Pos) -> SessionEvent {
+        if !self.carried_town_tags().is_empty() || self.kills_this_delve > 0 {
+            self.return_to_oakhaven(false)
+        } else {
+            self.enter_zone_at(ZoneId::Oakhaven, Some(entry), false)
+        }
+    }
+
     fn enter_zone(&mut self, id: ZoneId, down: bool) -> SessionEvent {
+        self.enter_zone_at(id, None, down)
+    }
+
+    fn enter_zone_at(&mut self, id: ZoneId, entry_override: Option<Pos>, down: bool) -> SessionEvent {
         let key = id.to_string_id();
         if !self.zones.contains_key(&key) {
-            let zone = match id {
-                ZoneId::Oakhaven => create_oakhaven_map(),
-                ZoneId::Dungeon(n) => {
-                    generate_dungeon_floor(n as i32, &mut self.rng, self.tier, self.cycle)
-                }
-                // Side branches are M3; generate as main-descent floors of equal depth for now.
-                ZoneId::Barrow(n) | ZoneId::Mire(n) | ZoneId::Frost(n) => {
-                    generate_dungeon_floor(n as i32, &mut self.rng, self.tier, self.cycle)
-                }
-                _ => create_oakhaven_map(),
-            };
+            let zone = crate::world::generate_zone_by_id(id.clone(), &mut self.rng, self.tier, self.cycle)
+                .unwrap_or_else(create_oakhaven_map);
             self.zones.insert(key.clone(), zone);
             if !self.flags.discovered_zones.contains(&id) {
                 self.flags.discovered_zones.push(id);
@@ -487,6 +556,7 @@ impl GameSession {
             .find(|t| t.kind == stairs_kind)
             .map(|t| Pos::new(t.x, t.y))
             .unwrap_or(entry);
+        let entry = entry_override.unwrap_or(entry);
         self.player.x = entry.x;
         self.player.y = entry.y;
         self.say(&format!("You enter {}.", self.zone().name));
@@ -1391,5 +1461,66 @@ mod tests {
             .map(|c| c["id"].as_str().unwrap())
             .collect();
         assert!(!labels.contains(&"quest_offer"));
+    }
+
+    #[test]
+    fn travel_graph_gates_portals_and_supply_banking() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 11);
+        s.player.hp = 5000;
+
+        // Oakhaven west gate (0,7) -> Overworld landing (2,12).
+        s.player.x = 1;
+        s.player.y = 7;
+        s.move_player(-1, 0);
+        assert_eq!(s.current, ZoneId::Overworld, "gate to overworld");
+        assert_eq!((s.player.x, s.player.y), (2, 12));
+
+        // Highspire gate is sealed without a Citadel Pass.
+        s.player.x = 46;
+        s.player.y = 12;
+        s.move_player(1, 0);
+        assert_eq!(s.current, ZoneId::Overworld, "highspire sealed");
+        assert!(s.log.iter().any(|l| l.contains("Causeway Gate is sealed")));
+        s.flags.citadel_access = true;
+        s.move_player(-1, 0); // step off the gate, then back on
+        s.move_player(1, 0);
+        assert_eq!(s.current, ZoneId::Highspire, "citadel pass opens highspire");
+        // Back out through Highspire's gate -> overworld (45,12).
+        let gate = find_tile(&s, TileKind::GateCity).expect("highspire has a gate");
+        s.player.x = gate.0 + 1;
+        s.player.y = gate.1;
+        s.move_player(-1, 0);
+        assert_eq!(s.current, ZoneId::Overworld);
+        assert_eq!((s.player.x, s.player.y), (45, 12));
+
+        // Barrow portal (10,4) -> barrow_1; its stairs_up exits to (10,5)
+        // on the overworld WITHOUT banking anything.
+        s.player.x = 10;
+        s.player.y = 5;
+        s.move_player(0, -1);
+        assert_eq!(s.current, ZoneId::Barrow(1), "portal to barrow_1");
+        let up = find_tile(&s, TileKind::StairsUp).expect("barrow_1 has stairs up");
+        // Stand next to the stairs and step on.
+        s.player.x = up.0;
+        s.player.y = up.1 + 1;
+        s.move_player(0, -1);
+        assert_eq!(s.current, ZoneId::Overworld, "barrow exit to overworld");
+        assert_eq!((s.player.x, s.player.y), (10, 5));
+
+        // Carry a Barrow Iron supply home: the Oakhaven gate banks it.
+        let supply = crate::world::create_quest_item_local("barrow_iron", 999);
+        s.player.inventory.push(supply);
+        s.player.x = 1;
+        s.player.y = 12;
+        s.move_player(-1, 0);
+        assert_eq!(s.current, ZoneId::Oakhaven, "gate home");
+        assert!(
+            s.town
+                .supplies_found
+                .contains(&crate::town::TownSupplyTag::BarrowIron),
+            "barrow_iron banked: {:?}",
+            s.town.supplies_found
+        );
+        assert!(s.carried_town_tags().is_empty(), "supply left the pack");
     }
 }

@@ -199,7 +199,10 @@ func rebuild_world() -> void:
 		terrain_root.add_child(tall_mm)
 
 	build_water(tiles, is_town, covered)
-	build_landmarks(placements)
+	# Placements are the Oakhaven town-lot models; anywhere else they'd
+	# draw the town's buildings at their Oakhaven tile coordinates.
+	if str(zone["id"]) == "oakhaven":
+		build_landmarks(placements)
 
 
 func fetch_placements() -> Array:
