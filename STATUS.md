@@ -84,3 +84,23 @@
 - **Verified** with before/after rendered screenshots of Oakhaven
   and the Silverwood Vale from the running game (dev capture script,
   removed after use); headless RUN1 check still green.
+
+## Asset re-bake audit debt — verified closed (Nov 20, 2026)
+
+The Nov 19 audit's remaining asset debt (V1 `mira_apothecary.glb`
+4,364 KB / 39,615 tris and `oakhaven_oak.glb` 1,842 KB / 17,474 tris
+with 512px muddy baked-AO textures) was already resolved in the
+assets this project inherited — verified Nov 20 by Blender telemetry
+and glTF inspection rather than assumed:
+
+| Asset | Now | Was (audit) | Verdict |
+| :--- | :--- | :--- | :--- |
+| `mira_apothecary.glb` | 400 KB, 8,492 tris, 0 non-manifold, all smooth | 4,364 KB, 39,615 tris | Rebuilt Track A style: 9 arch-kit primitives (Arch_Stone / Plaster / Timber / Shingle / Iron / Glow / Herb), flat colors, no textures — under the < 500 KB architecture budget |
+| `oakhaven_oak.glb` | 358 KB, 2,768 tris, 1024×1024 albedo + normal | 1,842 KB, 17,474 tris, 512px | V2 retopo/bake profile (platypus reference: 2,359 quads, 303 KB) — under the < 600 KB organic budget |
+
+- Files are byte-identical (md5) to `elfstoryreborn/public/models/`.
+- In-engine triangle load for Oakhaven's `.glb` set dropped from the
+  audit's ~135,897 tris/frame to ~30K (oak ×5 placements + Mira +
+  blacksmith + platypus).
+- Both models read correctly in the post-visual-pass rendered
+  screenshots. No re-bake run was needed; no asset files changed.
