@@ -104,3 +104,29 @@ and glTF inspection rather than assumed:
   blacksmith + platypus).
 - Both models read correctly in the post-visual-pass rendered
   screenshots. No re-bake run was needed; no asset files changed.
+
+## Watertight pass + Mira roof fix (Nov 20, 2026)
+
+- **Audit of all shipped models** (weld-first manifold check): the
+  blacksmith, Mira's apothecary and the platypus were already
+  watertight; the **Oakhaven oak was not** — 202 boundary edges, 22
+  non-manifold edges, 174 degenerate faces, and no trunk (the canopy
+  sat on the ground like a bush, in 5 placements).
+- **Oak rebuilt:** the torn shell was solidified, voxel-remeshed into
+  closed volumes (all canopy blobs kept, floating scraps removed),
+  and the original texture re-baked onto it (Cycles diffuse + normal,
+  with a delight pass to lift TRELLIS's baked-in shadow). A tapered
+  trunk with root flares was added. Result: **watertight**
+  (0 boundary / 0 non-manifold / 0 degenerate), 18.4K tris, 784 KB —
+  over the 600 KB organic guideline; accepted exception (finer voxel
+  needed to hold the canopy; one shared file for 5 placements).
+- **Mira's "weird texture" was her roof:** individual shingle tiles
+  over open gaps, reading as broken stripes in-game. Two
+  shingle-colored deck panels were fitted under the tile fields
+  (plane-fit to the tile centroids on both slopes); the tiles now
+  read as relief on a solid roof. Still watertight, 402 KB.
+- **Gate added so this can't recur:** `tools/check_watertight.py`
+  (batch manifold gate, non-zero exit on failure) and
+  `tools/render_preview.py` (isolated eyeball render), with the rules
+  written up in `tools/ASSET_GATE.md`. All 4 shipped models pass the
+  gate; verified in-game with a rendered screenshot.
