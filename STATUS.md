@@ -65,3 +65,22 @@
   door, lighting seal braziers, waystone attunement, boss-chest
   looting) remain future session work, as in the TS split — all
   world-side tiles, interactIds and data are in place.
+
+## Visual pass — haze fix (Nov 20, 2026)
+
+- **Diagnosis:** the washed-out look was stacked — warm tan fog
+  (density 0.006) over everything, bloom lifting the bright scene,
+  ACES tonemapping desaturating, full-energy warm sky ambient, and
+  one palette bug: non-town "floor" tiles were gray-lavender, so the
+  overworld ground rendered gray instead of green.
+- **Fixes (Main.tscn):** fog density 0.006 → 0.0012 with a pale-blue
+  light color; glow off; tonemapper ACES → Filmic; sky ambient
+  energy 1.0 → 0.5; color adjustment on (saturation 1.18, contrast
+  1.06); sky energy 1.15 → 1.0; sky ground colors changed from tan
+  to sage so the backdrop around a map reads as distant meadow;
+  sun energy 1.15 → 1.25 for crisper shadows.
+- **Fixes (Main.gd palette):** wilderness floor is meadow green,
+  roads warmer sand, trees and water deeper.
+- **Verified** with before/after rendered screenshots of Oakhaven
+  and the Silverwood Vale from the running game (dev capture script,
+  removed after use); headless RUN1 check still green.

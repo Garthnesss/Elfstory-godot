@@ -264,15 +264,15 @@ func flat_box(kind: String) -> Vector2:
 func tile_color(kind: String, is_town: bool) -> Color:
 	match kind:
 		"floor":
-			return Color(0.36, 0.62, 0.30) if is_town else Color(0.42, 0.42, 0.46)
+			return Color(0.33, 0.58, 0.27) if is_town else Color(0.34, 0.58, 0.28)
 		"road":
-			return Color(0.55, 0.42, 0.28)
+			return Color(0.62, 0.48, 0.31)
 		"wall":
 			return Color(0.25, 0.24, 0.30)
 		"water":
-			return Color(0.13, 0.32, 0.60)
+			return Color(0.10, 0.28, 0.55)
 		"tree":
-			return Color(0.20, 0.45, 0.20)
+			return Color(0.16, 0.42, 0.18)
 		"pillar", "gate_city":
 			return Color(0.55, 0.53, 0.48)
 		"chest":

@@ -8,11 +8,11 @@
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
 sky_top_color = Color(0.32, 0.52, 0.83, 1)
-sky_horizon_color = Color(0.96, 0.8, 0.62, 1)
+sky_horizon_color = Color(0.93, 0.79, 0.63, 1)
 sky_curve = 0.12
-sky_energy_multiplier = 1.15
-ground_bottom_color = Color(0.22, 0.18, 0.16, 1)
-ground_horizon_color = Color(0.88, 0.72, 0.58, 1)
+sky_energy_multiplier = 1.0
+ground_bottom_color = Color(0.3, 0.32, 0.24, 1)
+ground_horizon_color = Color(0.62, 0.66, 0.52, 1)
 ground_curve = 0.08
 
 [sub_resource type="Sky" id="Sky_1"]
@@ -21,15 +21,19 @@ sky_material = SubResource("ProceduralSkyMaterial_1")
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 2
 sky = SubResource("Sky_1")
-tonemap_mode = 3
+tonemap_mode = 2
 ssao_enabled = true
-glow_enabled = true
-glow_intensity = 0.35
-glow_strength = 0.85
+glow_enabled = false
 fog_enabled = true
-fog_light_color = Color(0.92, 0.82, 0.7, 1)
-fog_density = 0.006
-fog_sky_affect = 0.35
+fog_light_color = Color(0.75, 0.83, 0.92, 1)
+fog_density = 0.0012
+fog_sky_affect = 0.15
+ambient_light_source = 3
+ambient_light_energy = 0.5
+adjustment_enabled = true
+adjustment_brightness = 1.0
+adjustment_contrast = 1.06
+adjustment_saturation = 1.18
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1")
@@ -39,7 +43,7 @@ environment = SubResource("Environment_1")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 light_color = Color(1, 0.86, 0.66, 1)
-light_energy = 1.15
+light_energy = 1.25
 shadow_enabled = true
 directional_shadow_max_distance = 140.0
 
