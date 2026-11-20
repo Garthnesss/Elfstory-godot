@@ -1,0 +1,13 @@
+# Rust
+/rust/target/
+
+# Godot 4
+/godot/.godot/
+*.import
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

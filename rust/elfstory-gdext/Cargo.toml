@@ -1,0 +1,11 @@
+[package]
+name = "elfstory-gdext"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+elfstory-core = { path = "../elfstory-core" }
+# Add `godot = { version = "0.2", features = ["api-4-3"] }` (or latest gdext matching Godot 4.7) in Milestone 2.
