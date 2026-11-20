@@ -665,6 +665,158 @@ pub struct QuestProgress {
     pub history: Vec<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Dialogue (TS types.ts DialogueSkillCheck / DialogueCondition /
+// DialogueChoice / DialogueNode / NpcDef). Data lives in npcs.rs.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogueSkillCheck {
+    pub attribute: AttributeKey,
+    pub threshold: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogueCondition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flag: Option<String>,
+    #[serde(default, rename = "flagEquals", skip_serializing_if = "Option::is_none")]
+    pub flag_equals: Option<serde_json::Value>,
+    #[serde(default, rename = "questId", skip_serializing_if = "Option::is_none")]
+    pub quest_id: Option<String>,
+    #[serde(default, rename = "questStatus", skip_serializing_if = "Option::is_none")]
+    pub quest_status: Option<QuestStatus>,
+    #[serde(default, rename = "questMinStage", skip_serializing_if = "Option::is_none")]
+    pub quest_min_stage: Option<i32>,
+    #[serde(default, rename = "questMaxStage", skip_serializing_if = "Option::is_none")]
+    pub quest_max_stage: Option<i32>,
+    #[serde(default, rename = "hasItemTag", skip_serializing_if = "Option::is_none")]
+    pub has_item_tag: Option<String>,
+    #[serde(default, rename = "minGold", skip_serializing_if = "Option::is_none")]
+    pub min_gold: Option<i32>,
+    #[serde(default, rename = "notFlag", skip_serializing_if = "Option::is_none")]
+    pub not_flag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DialogueAction {
+    #[serde(rename = "open_merchant")]
+    OpenMerchant {
+        #[serde(rename = "merchantId")]
+        merchant_id: String,
+    },
+    #[serde(rename = "respec_skills")]
+    RespecSkills { cost: i32 },
+    #[serde(rename = "heal_full")]
+    HealFull,
+    #[serde(rename = "start_quest")]
+    StartQuest {
+        #[serde(rename = "questId")]
+        quest_id: String,
+        log: String,
+    },
+    #[serde(rename = "advance_quest")]
+    AdvanceQuest {
+        #[serde(rename = "questId")]
+        quest_id: String,
+        stage: i32,
+        log: String,
+    },
+    #[serde(rename = "complete_quest")]
+    CompleteQuest {
+        #[serde(rename = "questId")]
+        quest_id: String,
+        #[serde(rename = "outcomeLabel")]
+        outcome_label: String,
+        log: String,
+        #[serde(default, rename = "rewardGold", skip_serializing_if = "Option::is_none")]
+        reward_gold: Option<i32>,
+        #[serde(default, rename = "rewardXp", skip_serializing_if = "Option::is_none")]
+        reward_xp: Option<i32>,
+        #[serde(default, rename = "rewardSkillPoint", skip_serializing_if = "Option::is_none")]
+        reward_skill_point: Option<i32>,
+        #[serde(default, rename = "rewardAttrPoint", skip_serializing_if = "Option::is_none")]
+        reward_attr_point: Option<i32>,
+        #[serde(default, rename = "rewardItemTag", skip_serializing_if = "Option::is_none")]
+        reward_item_tag: Option<String>,
+    },
+    #[serde(rename = "set_flag")]
+    SetFlag {
+        flag: String,
+        value: serde_json::Value,
+    },
+    #[serde(rename = "consume_quest_item")]
+    ConsumeQuestItem { tag: String },
+    #[serde(rename = "give_gold")]
+    GiveGold { amount: i32 },
+    #[serde(rename = "spend_gold")]
+    SpendGold { amount: i32 },
+    #[serde(rename = "grant_buff")]
+    GrantBuff {
+        text: String,
+        #[serde(default, rename = "hpBonus", skip_serializing_if = "Option::is_none")]
+        hp_bonus: Option<i32>,
+    },
+    #[serde(rename = "unlock_highspire")]
+    UnlockHighspire,
+    #[serde(rename = "switch_companion")]
+    SwitchCompanion,
+    #[serde(rename = "close_dialogue")]
+    CloseDialogue,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogueChoice {
+    pub id: String,
+    pub label: String,
+    #[serde(default, rename = "nextNodeId", skip_serializing_if = "Option::is_none")]
+    pub next_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<DialogueSkillCheck>,
+    #[serde(default, rename = "failNodeId", skip_serializing_if = "Option::is_none")]
+    pub fail_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<DialogueCondition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<DialogueAction>,
+    #[serde(default, rename = "extraActions", skip_serializing_if = "Vec::is_empty")]
+    pub extra_actions: Vec<DialogueAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DialogueNode {
+    pub id: String,
+    #[serde(default, rename = "speakerName", skip_serializing_if = "Option::is_none")]
+    pub speaker_name: Option<String>,
+    pub text: String,
+    pub choices: Vec<DialogueChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortraitLine {
+    pub text: String,
+    pub color: String,
+}
+
+/// TS `NpcDef`. `zone` stays a string: the def table covers towns the
+/// current ZoneId enum doesn't model yet. `portrait_file` is the basename
+/// of the TS portrait asset (e.g. "portrait_torin.jpg").
+#[derive(Debug, Clone, PartialEq)]
+pub struct NpcDef {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub glyph: String,
+    pub color: String,
+    pub zone: String,
+    pub portrait_file: Option<String>,
+    pub portrait: Vec<PortraitLine>,
+    pub merchant_id: Option<String>,
+    pub root_node_id: String,
+    pub nodes: HashMap<String, DialogueNode>,
+}
+
 string_enum!(LogTone {
     Neutral => "neutral",
     Combat => "combat",

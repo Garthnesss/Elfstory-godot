@@ -38,6 +38,18 @@ func _initialize() -> void:
 	session.move_player(-1, 0)
 	session.move_player(0, -1)
 
+	# M3 dialogue bridge smoke: no conversation is open yet, so the node
+	# JSON is null and a stray choice is a safe no-op.
+	if str(session.dialogue_json()) != "null":
+		push_error("RUN1_CHECK_FAIL: dialogue_json() should be 'null' with no active dialogue")
+		quit(1)
+		return
+	if str(session.choose_dialogue("trade")) != "none":
+		push_error("RUN1_CHECK_FAIL: choose_dialogue with no dialogue should return 'none'")
+		quit(1)
+		return
+	session.close_dialogue()
+
 	var after: Variant = JSON.parse_string(session.state_json())
 	var p: Dictionary = after["player"]
 	print("RUN1_CHECK_OK player=(%d,%d) zone=%s" % [int(p["x"]), int(p["y"]), str(after["zone"]["id"])])

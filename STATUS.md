@@ -21,3 +21,11 @@
 - Godot front-end: Main.tscn/Main.gd — MultiMesh terrain with .glb footprint hiding, V2 landmarks (placeholder boxes when a model is absent), animated water plane over the pond, ACES + SSAO + glow environment, warm sun shadows, Overhead Tactical + Chase camera (V, [ ] yaw), HUD/log/TownPanel/Dialogue/Merchant UI.
 - Verified headless on Mac: editor import clean,  -> RUN1_CHECK_OK (bridge live in-engine), Main scene runs 90 frames with no script errors. **NOT yet verified visually** — Garth opening the project in Godot is the visual gate.
 - Slice simplifications (M3): skills/status-DoTs in combat, full merchant tables + NPC dialogue trees (npcs.ts), side-dungeon generators, gold death toll.
+
+## Milestone 3 (part 1) — npcs.ts port: full merchant tables + dialogue trees (Nov 20, 2026)
+- New `npcs.rs`: all **18 NPC defs** (13 quest/merchant + 5 ambient townsfolk), **60 dialogue nodes / 111 choices** ported verbatim (411 TS string literals + 122 colors audited byte-for-byte), 10 quest defs, 17 lore entries, `create_merchant_stock` (mira/vex/bram/halda/orin + supplies-gated blacksmith + Torin default), `is_quest_active`. Data-integrity test: every root node exists and every choice route resolves.
+- New dialogue types in types.rs (DialogueChoice/Node/Action/Condition/SkillCheck, NpcDef).
+- Session dialogue engine mirroring App.tsx: condition-gated choices (incl. the questStatus-undefined = not-started convention), attribute checks routing to fail nodes with no actions, all 14 action types (heal_full, start/advance/complete quest with the pay-once guard + relic/gold/XP rewards, set_flag against typed WorldFlags + overflow map, respec via compute_respec_points, companion swap with TS hp formulas, unlock_highspire, gold give/spend, consume quest item, grant buff).
+- Merchant resolution now matches TS: Torin's trade resolves to the rebuilt 'blacksmith' stock once complete; stocks seed lazily from npcs.rs (the M2 hand-built minimal stock is gone).
+- Bridge + Godot: `dialogue_json` / `choose_dialogue` / `close_dialogue`; DialoguePanel renders real nodes with choice buttons; movement gated while dialogue is open.
+- Verified: **cargo test 69/69 on Mac**, gdext builds, headless RUN1_CHECK_OK (incl. new dialogue bridge smoke), Main scene 90 frames no errors. Visual/dialogue-by-eye check still Garth's gate in the editor.

@@ -56,6 +56,7 @@ var town_panel: PanelContainer
 var town_box: VBoxContainer
 var dialogue_panel: PanelContainer
 var dialogue_label: Label
+var dialogue_choices: VBoxContainer
 var merchant_panel: PanelContainer
 var merchant_title: Label
 var merchant_rows: VBoxContainer
@@ -535,7 +536,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F, KEY_ENTER, KEY_KP_ENTER:
 				do_interact()
 			_:
-				if merchant_panel.visible:
+				if merchant_panel.visible or dialogue_panel.visible:
 					return # modal is up; don't walk behind it
 				var d := key_dir(k.physical_keycode)
 				if d != Vector2i.ZERO:
@@ -568,7 +569,7 @@ func key_dir(k: int) -> Vector2i:
 ## Held-key walking: poll the same key set every MOVE_REPEAT seconds.
 func update_held_movement(delta: float) -> void:
 	move_timer -= delta
-	if move_timer > 0.0 or merchant_panel.visible:
+	if move_timer > 0.0 or merchant_panel.visible or dialogue_panel.visible:
 		return
 	var held := Vector2i.ZERO
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
@@ -661,8 +662,10 @@ func build_ui() -> void:
 	dialogue_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	dialogue_label.custom_minimum_size = Vector2(560, 0)
 	dlg_box.add_child(dialogue_label)
+	dialogue_choices = VBoxContainer.new()
+	dlg_box.add_child(dialogue_choices)
 	var dlg_close := make_button("Close")
-	dlg_close.pressed.connect(func() -> void: dialogue_panel.hide())
+	dlg_close.pressed.connect(_on_dialogue_close)
 	dlg_box.add_child(dlg_close)
 	dialogue_panel.hide()
 
@@ -811,26 +814,54 @@ func _on_relocate_blacksmith(lot: String) -> void:
 # Dialogue + merchant panels
 # ---------------------------------------------------------------------------
 
-func open_dialogue(npc_id: String) -> void:
-	var name := npc_id
-	var title := ""
-	for npc in state["zone"].get("npcs", []):
-		if str(npc["id"]) == npc_id:
-			name = str(npc["name"])
-			title = str(npc.get("title", ""))
-			break
-	var town: Dictionary = state.get("town", {})
-	var line := ""
-	if npc_id.to_lower() == "torin" and not bool(town.get("blacksmithComplete", false)):
-		line = "Bring me my anvil, bellows and sign from the Reliquary, and mind the Heartcoal."
-	elif npc_id.to_lower() == "torin":
-		line = "Forge is lit and the lot is yours to move — free, any time. The Oakhaven-Forged Blade is on the rack."
-	elif title != "":
-		line = "%s, at your service. Mind the roads — the deep is restless." % title
-	else:
-		line = "Good to see you in one piece."
-	dialogue_label.text = "%s\n%s" % [name, line]
+func open_dialogue(_npc_id: String) -> void:
+	render_dialogue()
+
+
+## Render the session's current dialogue node (real npcs.rs trees via the
+## bridge): speaker, text, and one button per condition-visible choice.
+func render_dialogue() -> void:
+	var parsed: Variant = JSON.parse_string(session.dialogue_json())
+	if not (parsed is Dictionary):
+		dialogue_panel.hide()
+		return
+	var node: Dictionary = parsed
+	var speaker := str(node.get("speakerName", ""))
+	var head := str(node.get("name", ""))
+	if speaker != "":
+		head = speaker
+	var title := str(node.get("title", ""))
+	if title != "":
+		head += " — " + title
+	dialogue_label.text = "%s\n%s" % [head, str(node.get("text", ""))]
+	clear_children(dialogue_choices)
+	for c in node.get("choices", []):
+		var choice: Dictionary = c
+		var b := make_button(str(choice.get("label", "...")))
+		b.pressed.connect(_on_dialogue_choice.bind(str(choice.get("id", ""))))
+		dialogue_choices.add_child(b)
 	dialogue_panel.show()
+
+
+func _on_dialogue_choice(choice_id: String) -> void:
+	var ev: String = session.choose_dialogue(choice_id)
+	if ev.begins_with("merchant:"):
+		dialogue_panel.hide()
+		refresh()
+		open_merchant(ev.trim_prefix("merchant:"))
+		return
+	refresh()
+	# Still talking (advanced node / failed check) or done?
+	if str(JSON.parse_string(session.dialogue_json())) == "<null>":
+		dialogue_panel.hide()
+	else:
+		render_dialogue()
+
+
+func _on_dialogue_close() -> void:
+	session.close_dialogue()
+	dialogue_panel.hide()
+	refresh()
 
 
 func open_merchant(merchant_id: String) -> void:

@@ -4,6 +4,7 @@
 pub mod combat;
 pub mod difficulty;
 pub mod loot;
+pub mod npcs;
 pub mod rng;
 pub mod run_rules;
 pub mod save;

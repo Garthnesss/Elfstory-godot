@@ -10,22 +10,25 @@
 //! - Enemy turns: an enemy with a telegraphed intent strikes for its intent
 //!   damage; otherwise an alerted enemy steps toward the player and strikes
 //!   when adjacent, using the TS formula max(1, atk - round(def * 0.65)).
-//! - The rebuilt Blacksmith stock is built here from loot.rs constructors;
-//!   the full merchant tables live in npcs.ts (M3).
+//! - Merchant tables and dialogue trees are the M3 npcs.rs port; this
+//!   module hosts the dialogue engine (conditions, checks, quest actions)
+//!   mirroring App.tsx's handleSelectDialogueChoice.
 //! - Wake in Oakhaven heals to full; the TS gold death toll is Normal-mode
 //!   App logic (M3).
 
 use crate::combat::{calculate_player_hit, choose_enemy_intent, find_path_next_step};
 use crate::difficulty::DifficultyTier;
-use crate::loot::{create_consumable, create_starter_item, ItemIdGen};
+use crate::loot::{create_consumable, create_named_relic, create_starter_item, ItemIdGen};
 use crate::rng::Rng;
-use crate::skills::{compute_derived_stats, get_starter_preset};
+use crate::skills::{compute_derived_stats, compute_respec_points, get_starter_preset};
 use crate::town::{
     bank_carried_town_items, can_complete_blacksmith, complete_blacksmith, create_town_state,
     is_town_item_tag, relocate_blacksmith, split_unbanked_town_items, town_return_tick,
-    BlacksmithLot, TownReturnOptions, TownState, BLACKSMITH_GATED_ITEM_NAME,
+    BlacksmithLot, TownReturnOptions, TownState,
 };
 use crate::types::*;
+#[cfg(test)]
+use crate::town::BLACKSMITH_GATED_ITEM_NAME;
 use crate::world::{create_oakhaven_map, generate_dungeon_floor};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -53,6 +56,12 @@ pub struct GameSession {
     pub tier: DifficultyTier,
     pub cycle: u32,
     pub merchant_stocks: HashMap<String, Vec<Item>>,
+    /// Quest journal (TS App `quests` state; lives in GameSave there).
+    pub quests: HashMap<String, QuestProgress>,
+    /// Active dialogue (npc id, node id) while a conversation is open.
+    pub active_dialogue: Option<(String, String)>,
+    /// Dialogue set_flag values for keys outside the typed WorldFlags.
+    extra_flags: HashMap<String, Value>,
     pub log: Vec<String>,
     delve_progress: i32,
     kills_this_delve: i32,
@@ -146,6 +155,9 @@ impl GameSession {
             tier: DifficultyTier::Standard,
             cycle: 0,
             merchant_stocks: HashMap::new(),
+            quests: HashMap::new(),
+            active_dialogue: None,
+            extra_flags: HashMap::new(),
             log: vec![],
             delve_progress: 0,
             kills_this_delve: 0,
@@ -153,6 +165,28 @@ impl GameSession {
         };
         s.say("Welcome to Oakhaven. The Reliquary below holds what the town needs.");
         s
+    }
+
+    /// Grant XP and run level-ups (TS grantXpAndCheckLevel shape:
+    /// xpToNext grows x1.48, +2 attribute points / +1 skill point per
+    /// level, full heal on level). Returns LevelUp if a level was gained.
+    pub fn gain_xp(&mut self, xp: i32) -> SessionEvent {
+        self.player.xp += xp;
+        let mut event = SessionEvent::None;
+        while self.player.xp >= self.player.xp_to_next {
+            self.player.xp -= self.player.xp_to_next;
+            self.player.level += 1;
+            self.player.xp_to_next = (self.player.xp_to_next as f64 * 1.48).round() as i32;
+            self.player.attribute_points += 2;
+            self.player.skill_points += 1;
+            let d = self.derived();
+            self.player.max_hp = d.max_hp;
+            self.player.hp = d.max_hp;
+            self.player.max_mana = d.max_mana;
+            self.say(&format!("Level up! You are now level {}.", self.player.level));
+            event = SessionEvent::LevelUp(self.player.level);
+        }
+        event
     }
 
     fn say(&mut self, text: &str) {
@@ -309,21 +343,7 @@ impl GameSession {
         self.say(&format!("{} falls. +{} gold.", enemy.name, enemy.gold_reward));
         // XP with difficulty scaling + level-ups (TS curve: xpToNext x1.48).
         let xp = crate::difficulty::scale_xp_for_difficulty(enemy.xp_reward, self.tier, self.cycle);
-        self.player.xp += xp;
-        let mut event = SessionEvent::None;
-        while self.player.xp >= self.player.xp_to_next {
-            self.player.xp -= self.player.xp_to_next;
-            self.player.level += 1;
-            self.player.xp_to_next = (self.player.xp_to_next as f64 * 1.48).round() as i32;
-            self.player.attribute_points += 2;
-            self.player.skill_points += 1;
-            let d = self.derived();
-            self.player.max_hp = d.max_hp;
-            self.player.hp = d.max_hp;
-            self.player.max_mana = d.max_mana;
-            self.say(&format!("Level up! You are now level {}.", self.player.level));
-            event = SessionEvent::LevelUp(self.player.level);
-        }
+        let event = self.gain_xp(xp);
         // Kill drop (first-gear guarantee honoured via loot rules).
         let first = self.flags.first_gear_dropped == Some(true);
         let depth = self.zone().depth;
@@ -553,9 +573,13 @@ impl GameSession {
             .map(|n| n.id.clone());
         if let Some(npc_id) = npc {
             self.flags.npc_met.insert(npc_id.clone(), true);
-            if npc_id == "torin" && self.town.blacksmith_complete {
-                return SessionEvent::OpenMerchant("blacksmith".into());
-            }
+            // TS: talking always opens the dialogue tree; the trade choice
+            // inside resolves 'torin' -> 'blacksmith' once the forge is
+            // rebuilt (see merchant_stock).
+            let root = crate::npcs::npc_def(&npc_id)
+                .map(|d| d.root_node_id.clone())
+                .unwrap_or_else(|| "root".into());
+            self.active_dialogue = Some((npc_id.clone(), root));
             return SessionEvent::OpenDialogue(npc_id);
         }
         if self.in_town()
@@ -580,7 +604,13 @@ impl GameSession {
         if result.completed {
             self.player.gold += result.wish_bonus_gold;
             self.say("Torin's Blacksmith rises again. The rebuilt shop is open.");
-            self.build_blacksmith_stock();
+            let stock = crate::npcs::create_merchant_stock(
+                &mut self.id_gen,
+                &mut self.rng,
+                "blacksmith",
+                Some(&self.town),
+            );
+            self.merchant_stocks.insert("blacksmith".into(), stock);
         }
         result.completed
     }
@@ -599,45 +629,28 @@ impl GameSession {
         changed
     }
 
-    /// Minimal rebuilt-Blacksmith stock (full tables are npcs.ts, M3).
-    fn build_blacksmith_stock(&mut self) {
-        let mut stock = vec![
-            create_consumable(&mut self.id_gen, ConsumableKind::HealPotion, 1),
-            create_consumable(&mut self.id_gen, ConsumableKind::ManaPotion, 1),
-        ];
-        // The gated blade (full named-item table is npcs.ts, M3; stats here
-        // are slice values for a level-1 town-tier weapon).
-        let blade = Item {
-            id: self.id_gen.next_id(),
-            name: BLACKSMITH_GATED_ITEM_NAME.to_string(),
-            category: ItemCategory::Equipment,
-            slot: Some(ItemSlot::Weapon),
-            consumable_kind: None,
-            rarity: ItemRarity::Rare,
-            glyph: "†".to_string(),
-            level_req: 1,
-            upgrade_level: 0,
-            stats: ItemStats {
-                atk: Some(6),
-                ..Default::default()
-            },
-            affix: None,
-            affix_label: None,
-            set_id: None,
-            value: 150,
-            description: "Forged in the rebuilt Oakhaven smithy; the edge holds a pond-blue sheen.".to_string(),
-            quantity: None,
-            quest_tag: None,
-        };
-        stock.push(blade);
-        self.merchant_stocks.insert("blacksmith".into(), stock);
+    /// TS merchant resolution: once the Blacksmith is rebuilt, Torin's
+    /// trade opens the rebuilt shop's stock instead of his field kit.
+    fn resolve_merchant(&self, merchant_id: &str) -> String {
+        if merchant_id == "torin" && self.town.blacksmith_complete {
+            "blacksmith".to_string()
+        } else {
+            merchant_id.to_string()
+        }
     }
 
     pub fn merchant_stock(&mut self, merchant_id: &str) -> Vec<Item> {
-        if merchant_id == "blacksmith" && self.town.blacksmith_complete && !self.merchant_stocks.contains_key("blacksmith") {
-            self.build_blacksmith_stock();
+        let id = self.resolve_merchant(merchant_id);
+        if !self.merchant_stocks.contains_key(&id) {
+            let stock = crate::npcs::create_merchant_stock(
+                &mut self.id_gen,
+                &mut self.rng,
+                &id,
+                Some(&self.town),
+            );
+            self.merchant_stocks.insert(id.clone(), stock);
         }
-        self.merchant_stocks.get(merchant_id).cloned().unwrap_or_default()
+        self.merchant_stocks.get(&id).cloned().unwrap_or_default()
     }
 
     pub fn buy_item(&mut self, merchant_id: &str, index: usize) -> Result<Item, String> {
@@ -650,6 +663,456 @@ impl GameSession {
         self.player.inventory.push(item.clone());
         self.say(&format!("Bought {}.", item.name));
         Ok(item)
+    }
+
+    // ------------------------------------------------------------------
+    // Dialogue engine (M3) — mirrors App.tsx handleSelectDialogueChoice.
+    // ------------------------------------------------------------------
+
+    fn flag_value(&self, name: &str) -> Option<Value> {
+        if let Some(v) = self.extra_flags.get(name) {
+            return Some(v.clone());
+        }
+        let f = &self.flags;
+        let v = match name {
+            "caravanChoice" => f.caravan_choice.clone().map(Value::from),
+            "blightChoice" => f.blight_choice.clone().map(Value::from),
+            "bellChoice" => f.bell_choice.clone().map(Value::from),
+            "vexTipClaimed" => f.vex_tip_claimed.map(Value::from),
+            "malakorWeakened" => f.malakor_weakened.map(Value::from),
+            "cipherInscribed" => f.cipher_inscribed.map(Value::from),
+            "malakorDefeated" => f.malakor_defeated.map(Value::from),
+            "cantorDefeated" => f.cantor_defeated.map(Value::from),
+            "cantorPacified" => f.cantor_pacified.map(Value::from),
+            "inquisitorDefeated" => f.inquisitor_defeated.map(Value::from),
+            "barrowBossDefeated" => f.barrow_boss_defeated.map(Value::from),
+            "mireBossDefeated" => f.mire_boss_defeated.map(Value::from),
+            "frostBossDefeated" => f.frost_boss_defeated.map(Value::from),
+            "silverbridgeCleared" => f.silverbridge_cleared.map(Value::from),
+            "miraPotionTier" => Some(Value::from(f.mira_potion_tier)),
+            "citadelAccess" => Some(Value::from(f.citadel_access)),
+            "floor3Shortcut" => Some(Value::from(f.floor3_shortcut)),
+            "firstGearDropped" => f.first_gear_dropped.map(Value::from),
+            "waystonesAttuned" => f.waystones_attuned.map(Value::from),
+            _ => None,
+        };
+        v
+    }
+
+    fn set_flag_value(&mut self, name: &str, value: Value) {
+        let f = &mut self.flags;
+        let as_bool = value.as_bool();
+        let as_str = value.as_str().map(|s| s.to_string());
+        match name {
+            "caravanChoice" => f.caravan_choice = as_str,
+            "blightChoice" => f.blight_choice = as_str,
+            "bellChoice" => f.bell_choice = as_str,
+            "vexTipClaimed" => f.vex_tip_claimed = as_bool,
+            "malakorWeakened" => f.malakor_weakened = as_bool,
+            "cipherInscribed" => f.cipher_inscribed = as_bool,
+            "malakorDefeated" => f.malakor_defeated = as_bool,
+            "cantorDefeated" => f.cantor_defeated = as_bool,
+            "cantorPacified" => f.cantor_pacified = as_bool,
+            "inquisitorDefeated" => f.inquisitor_defeated = as_bool,
+            "barrowBossDefeated" => f.barrow_boss_defeated = as_bool,
+            "mireBossDefeated" => f.mire_boss_defeated = as_bool,
+            "frostBossDefeated" => f.frost_boss_defeated = as_bool,
+            "silverbridgeCleared" => f.silverbridge_cleared = as_bool,
+            "miraPotionTier" => {
+                if let Some(n) = value.as_i64() {
+                    f.mira_potion_tier = n as i32;
+                }
+            }
+            "citadelAccess" => f.citadel_access = as_bool.unwrap_or(false),
+            "floor3Shortcut" => f.floor3_shortcut = as_bool.unwrap_or(false),
+            "firstGearDropped" => f.first_gear_dropped = as_bool,
+            "waystonesAttuned" => {
+                if let Some(n) = value.as_i64() {
+                    f.waystones_attuned = Some(n as i32);
+                }
+            }
+            _ => {
+                self.extra_flags.insert(name.to_string(), value);
+            }
+        }
+    }
+
+    /// TS choice-condition gate (choices failing it are hidden).
+    pub fn condition_met(&self, cond: &DialogueCondition) -> bool {
+        if let Some(flag) = &cond.flag {
+            let actual = self.flag_value(flag);
+            match &cond.flag_equals {
+                Some(want) => {
+                    if actual.as_ref() != Some(want) {
+                        return false;
+                    }
+                }
+                None => {
+                    let truthy = matches!(actual, Some(Value::Bool(true)))
+                        || matches!(actual, Some(Value::String(ref s)) if !s.is_empty())
+                        || matches!(actual, Some(Value::Number(ref n)) if n.as_i64() != Some(0));
+                    if !truthy {
+                        return false;
+                    }
+                }
+            }
+        }
+        if let Some(not_flag) = &cond.not_flag {
+            let actual = self.flag_value(not_flag);
+            let truthy = matches!(actual, Some(Value::Bool(true)))
+                || matches!(actual, Some(Value::String(ref s)) if !s.is_empty());
+            if truthy {
+                return false;
+            }
+        }
+        if let Some(quest_id) = &cond.quest_id {
+            match &cond.quest_status {
+                // questStatus present: the quest must be in that status.
+                Some(status) => match self.quests.get(quest_id) {
+                    Some(q) if &q.status == status => {}
+                    _ => return false,
+                },
+                // questId with questStatus undefined (npcs.ts convention):
+                // the quest must not have been started.
+                None => {
+                    if self.quests.contains_key(quest_id) {
+                        return false;
+                    }
+                }
+            }
+            if let Some(min) = cond.quest_min_stage {
+                if self.quests.get(quest_id).map(|q| q.stage).unwrap_or(0) < min {
+                    return false;
+                }
+            }
+            if let Some(max) = cond.quest_max_stage {
+                if self.quests.get(quest_id).map(|q| q.stage).unwrap_or(0) > max {
+                    return false;
+                }
+            }
+        }
+        if let Some(tag) = &cond.has_item_tag {
+            if !self
+                .player
+                .inventory
+                .iter()
+                .any(|i| i.quest_tag.as_deref() == Some(tag.as_str()))
+            {
+                return false;
+            }
+        }
+        if let Some(min_gold) = cond.min_gold {
+            if self.player.gold < min_gold {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Current dialogue node as JSON for the front-end (choices filtered
+    /// by their conditions, like the TS renderer).
+    pub fn dialogue_json(&self) -> Value {
+        let Some((npc_id, node_id)) = &self.active_dialogue else {
+            return Value::Null;
+        };
+        let Some(def) = crate::npcs::npc_def(npc_id) else {
+            return Value::Null;
+        };
+        let Some(node) = def.nodes.get(node_id) else {
+            return Value::Null;
+        };
+        let choices: Vec<Value> = node
+            .choices
+            .iter()
+            .filter(|c| c.condition.as_ref().map(|k| self.condition_met(k)).unwrap_or(true))
+            .map(|c| json!({ "id": c.id, "label": c.label }))
+            .collect();
+        json!({
+            "npcId": def.id,
+            "name": def.name,
+            "title": def.title,
+            "color": def.color,
+            "nodeId": node.id,
+            "speakerName": node.speaker_name,
+            "text": node.text,
+            "choices": choices,
+        })
+    }
+
+    pub fn close_dialogue(&mut self) {
+        self.active_dialogue = None;
+    }
+
+    fn apply_dialogue_action(&mut self, action: &DialogueAction) -> Option<SessionEvent> {
+        match action {
+            DialogueAction::CloseDialogue => {
+                self.active_dialogue = None;
+                None
+            }
+            DialogueAction::OpenMerchant { merchant_id } => {
+                self.active_dialogue = None;
+                Some(SessionEvent::OpenMerchant(merchant_id.clone()))
+            }
+            DialogueAction::HealFull => {
+                let d = compute_derived_stats(&self.player, Some(&self.flags), Some(&self.town));
+                self.player.max_hp = d.max_hp;
+                self.player.hp = d.max_hp;
+                self.player.max_mana = d.max_mana;
+                self.player.mana = d.max_mana;
+                self.player.statuses.clear();
+                None
+            }
+            DialogueAction::GiveGold { amount } => {
+                self.player.gold += amount;
+                None
+            }
+            DialogueAction::SpendGold { amount } => {
+                self.player.gold = (self.player.gold - amount).max(0);
+                None
+            }
+            DialogueAction::ConsumeQuestItem { tag } => {
+                self.player
+                    .inventory
+                    .retain(|i| i.quest_tag.as_deref() != Some(tag.as_str()));
+                None
+            }
+            DialogueAction::SetFlag { flag, value } => {
+                self.set_flag_value(flag, value.clone());
+                None
+            }
+            DialogueAction::UnlockHighspire => {
+                self.flags.citadel_access = true;
+                self.say("Citadel Access unlocked! Walk through Oakhaven’s West Gate (Ω) or Travel [M].");
+                None
+            }
+            DialogueAction::GrantBuff { text, hp_bonus } => {
+                if let Some(bonus) = hp_bonus {
+                    self.player.bonus_hp = Some(self.player.bonus_hp.unwrap_or(0) + bonus);
+                    let d =
+                        compute_derived_stats(&self.player, Some(&self.flags), Some(&self.town));
+                    self.player.max_hp = d.max_hp;
+                    self.player.hp = (self.player.hp + bonus).min(d.max_hp);
+                }
+                self.say(text);
+                None
+            }
+            DialogueAction::StartQuest { quest_id, log } => {
+                let stage = if quest_id == "deep_survey" {
+                    (self.flags.read_lore_ids.len() as i32).clamp(1, 6)
+                } else {
+                    1
+                };
+                self.quests.insert(
+                    quest_id.clone(),
+                    QuestProgress {
+                        id: quest_id.clone(),
+                        status: QuestStatus::Active,
+                        stage,
+                        outcome_label: None,
+                        history: vec![log.clone()],
+                    },
+                );
+                let title = crate::npcs::quest_def(quest_id)
+                    .map(|q| q.title.to_string())
+                    .unwrap_or_else(|| quest_id.clone());
+                self.say(&format!("Quest Started: {title}"));
+                None
+            }
+            DialogueAction::AdvanceQuest {
+                quest_id,
+                stage,
+                log,
+            } => {
+                if let Some(q) = self.quests.get_mut(quest_id) {
+                    q.stage = *stage;
+                    q.history.push(log.clone());
+                }
+                None
+            }
+            DialogueAction::CompleteQuest {
+                quest_id,
+                outcome_label,
+                log,
+                reward_gold,
+                reward_xp,
+                reward_skill_point,
+                reward_attr_point,
+                reward_item_tag,
+            } => {
+                // TS pay-once guard: a completed quest never pays twice.
+                if self.quests.get(quest_id).map(|q| q.status.clone())
+                    == Some(QuestStatus::Completed)
+                {
+                    return None;
+                }
+                let history = {
+                    let mut h = self
+                        .quests
+                        .get(quest_id)
+                        .map(|q| q.history.clone())
+                        .unwrap_or_default();
+                    h.push(log.clone());
+                    h
+                };
+                self.quests.insert(
+                    quest_id.clone(),
+                    QuestProgress {
+                        id: quest_id.clone(),
+                        status: QuestStatus::Completed,
+                        stage: 3,
+                        outcome_label: Some(outcome_label.clone()),
+                        history,
+                    },
+                );
+                if let Some(g) = reward_gold {
+                    self.player.gold += g;
+                }
+                if let Some(sp) = reward_skill_point {
+                    self.player.skill_points += sp;
+                }
+                if let Some(ap) = reward_attr_point {
+                    self.player.attribute_points += ap;
+                }
+                if let Some(tag) = reward_item_tag {
+                    let relic = create_named_relic(&mut self.id_gen, &mut self.rng, tag);
+                    self.say(&format!("Received {}!", relic.name));
+                    self.player.inventory.push(relic);
+                }
+                if let Some(xp) = reward_xp {
+                    self.gain_xp(*xp);
+                }
+                let title = crate::npcs::quest_def(quest_id)
+                    .map(|q| q.title.to_string())
+                    .unwrap_or_else(|| quest_id.clone());
+                self.say(&format!("Quest Completed: {title}"));
+                None
+            }
+            DialogueAction::RespecSkills { cost } => {
+                if self.player.gold >= *cost {
+                    self.player.gold -= cost;
+                    let preset = get_starter_preset(self.player.starter_class);
+                    let refunded =
+                        compute_respec_points(self.player.level, &self.flags, &self.quests);
+                    self.player.attributes = preset.attributes;
+                    self.player.skills.clear();
+                    self.player.hotbar = vec![None; 5];
+                    self.player.attribute_points = refunded.attribute_points;
+                    self.player.skill_points = refunded.skill_points;
+                    let d =
+                        compute_derived_stats(&self.player, Some(&self.flags), Some(&self.town));
+                    self.player.max_hp = d.max_hp;
+                    self.player.hp = d.max_hp;
+                    self.player.max_mana = d.max_mana;
+                    self.player.mana = d.max_mana;
+                }
+                None
+            }
+            DialogueAction::SwitchCompanion => {
+                let next_kind = match self.player.companion.as_ref().map(|c| c.kind) {
+                    Some(CompanionKind::StarlightOwl) => CompanionKind::SilverwindLynx,
+                    _ => CompanionKind::StarlightOwl,
+                };
+                let (name, max_hp, blurb) = match next_kind {
+                    CompanionKind::StarlightOwl => (
+                        "Starlight Owl",
+                        20 + (self.player.level - 1) * 5,
+                        "+1 Sight Radius & Arcane Bolts",
+                    ),
+                    CompanionKind::SilverwindLynx => (
+                        "Silverwind Lynx",
+                        24 + (self.player.level - 1) * 7,
+                        "Swift Melee Pounce",
+                    ),
+                };
+                let (cx, cy) = self
+                    .player
+                    .companion
+                    .as_ref()
+                    .map(|c| (c.x, c.y))
+                    .unwrap_or((self.player.x - 1, self.player.y));
+                self.player.companion = Some(CompanionState {
+                    kind: next_kind,
+                    name: name.to_string(),
+                    x: cx.max(1),
+                    y: cy,
+                    hp: max_hp,
+                    max_hp,
+                    respawn_cooldown: 0,
+                });
+                self.say(&format!("Spirit Companion bonded: {name} ({blurb})."));
+                None
+            }
+        }
+    }
+
+    /// Pick a choice in the active dialogue. Mirrors the TS processor:
+    /// a failed skill check routes to failNodeId with NO actions applied;
+    /// otherwise actions run (action + extraActions), then navigation.
+    pub fn choose_dialogue(&mut self, choice_id: &str) -> SessionEvent {
+        let Some((npc_id, node_id)) = self.active_dialogue.clone() else {
+            return SessionEvent::None;
+        };
+        let Some(def) = crate::npcs::npc_def(&npc_id) else {
+            self.active_dialogue = None;
+            return SessionEvent::None;
+        };
+        let Some(node) = def.nodes.get(&node_id) else {
+            self.active_dialogue = None;
+            return SessionEvent::None;
+        };
+        let Some(choice) = node.choices.iter().find(|c| c.id == choice_id).cloned() else {
+            return SessionEvent::None;
+        };
+        if let Some(cond) = &choice.condition {
+            if !self.condition_met(cond) {
+                return SessionEvent::None;
+            }
+        }
+        if let Some(check) = &choice.check {
+            let pass = self.player.attributes.get(check.attribute) >= check.threshold;
+            if !pass {
+                let target = choice.fail_node_id.clone().or(choice.next_node_id.clone());
+                match target {
+                    Some(t) => {
+                        self.active_dialogue = Some((npc_id, t));
+                    }
+                    None => {
+                        self.active_dialogue = None;
+                    }
+                }
+                return SessionEvent::None;
+            }
+        }
+        let mut event = SessionEvent::None;
+        let mut actions: Vec<DialogueAction> = Vec::new();
+        if let Some(a) = &choice.action {
+            actions.push(a.clone());
+        }
+        actions.extend(choice.extra_actions.iter().cloned());
+        let mut closed = false;
+        for action in &actions {
+            if let Some(ev) = self.apply_dialogue_action(action) {
+                event = ev;
+                closed = true;
+            }
+            if matches!(action, DialogueAction::CloseDialogue) {
+                closed = true;
+            }
+        }
+        if closed {
+            self.active_dialogue = None;
+            return event;
+        }
+        match &choice.next_node_id {
+            Some(next) => {
+                self.active_dialogue = Some((npc_id, next.clone()));
+                SessionEvent::None
+            }
+            None => {
+                self.active_dialogue = None;
+                SessionEvent::None
+            }
+        }
     }
 
     /// Carried (unbanked) town items in the player's pack.
@@ -696,6 +1159,7 @@ impl GameSession {
             "town": serde_json::to_value(&self.town).unwrap_or(Value::Null),
             "populationTier": crate::town::population_tier(&self.town),
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
+            "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "carriedTownTags": self.carried_town_tags(),
             "log": self.log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
         })
@@ -705,7 +1169,6 @@ impl GameSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::combat::find_path_next_step;
 
     /// BFS next step toward (tx, ty) that treats enemy-occupied tiles as
     /// passable (so the walker bump-fights through chokepoints the way a
@@ -860,12 +1323,73 @@ mod tests {
             .iter()
             .any(|i| i.name == BLACKSMITH_GATED_ITEM_NAME));
 
-        // Torin opens the rebuilt shop directly once complete.
+        // Torin now opens his dialogue tree; the trade choice resolves to
+        // the rebuilt 'blacksmith' stock (TS merchant resolution rule).
         s.player.x = crate::town_layout::TORIN_SPAWN.x;
         s.player.y = crate::town_layout::TORIN_SPAWN.y + 1;
         assert_eq!(
             s.interact(),
-            SessionEvent::OpenMerchant("blacksmith".to_string())
+            SessionEvent::OpenDialogue("torin".to_string())
         );
+        let dlg = s.dialogue_json();
+        assert_eq!(dlg["npcId"], "torin");
+        assert_eq!(
+            s.choose_dialogue("trade"),
+            SessionEvent::OpenMerchant("torin".to_string())
+        );
+        let resolved = s.merchant_stock("torin");
+        assert!(resolved
+            .iter()
+            .any(|i| i.name == BLACKSMITH_GATED_ITEM_NAME));
+    }
+
+    #[test]
+    fn dialogue_checks_conditions_and_quest_flow() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        // Torin skill check: Vanguard might is 3 -> pass to craft_pass.
+        s.active_dialogue = Some(("torin".into(), "root".into()));
+        assert_eq!(s.choose_dialogue("ask_craft"), SessionEvent::None);
+        assert_eq!(s.active_dialogue.as_ref().unwrap().1, "craft_pass");
+        // Drop might below the threshold -> fail node, no actions.
+        s.active_dialogue = Some(("torin".into(), "root".into()));
+        s.player.attributes.might = 1;
+        assert_eq!(s.choose_dialogue("ask_craft"), SessionEvent::None);
+        assert_eq!(s.active_dialogue.as_ref().unwrap().1, "craft_fail");
+        s.close_dialogue();
+        assert!(s.active_dialogue.is_none());
+
+        // Mira: quest-offer choice is visible before the quest starts,
+        // heal_full restores, and accepting starts herbalist_blight.
+        s.active_dialogue = Some(("mira".into(), "root".into()));
+        let dlg = s.dialogue_json();
+        let labels: Vec<&str> = dlg["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert!(labels.contains(&"quest_offer"), "offer visible: {labels:?}");
+        s.player.hp = 1;
+        s.player.mana = 0;
+        assert_eq!(s.choose_dialogue("heal_free"), SessionEvent::None);
+        assert_eq!(s.active_dialogue.as_ref().unwrap().1, "healed");
+        assert_eq!(s.player.hp, s.player.max_hp);
+        assert_eq!(s.player.mana, s.player.max_mana);
+
+        s.active_dialogue = Some(("mira".into(), "root".into()));
+        assert_eq!(s.choose_dialogue("quest_offer"), SessionEvent::None);
+        assert_eq!(s.active_dialogue.as_ref().unwrap().1, "blight_intro");
+        assert_eq!(s.choose_dialogue("accept_blight"), SessionEvent::None);
+        assert!(crate::npcs::is_quest_active(&s.quests, "herbalist_blight"));
+        // Offer is now hidden (quest started).
+        s.active_dialogue = Some(("mira".into(), "root".into()));
+        let dlg = s.dialogue_json();
+        let labels: Vec<&str> = dlg["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap())
+            .collect();
+        assert!(!labels.contains(&"quest_offer"));
     }
 }

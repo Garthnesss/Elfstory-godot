@@ -132,6 +132,31 @@ impl ElfStorySession {
         }
     }
 
+    /// Current dialogue node (condition-filtered choices) as JSON, or
+    /// "null" when no conversation is open.
+    #[func]
+    fn dialogue_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.dialogue_json().to_string()),
+            None => GString::from("null"),
+        }
+    }
+
+    #[func]
+    fn choose_dialogue(&mut self, choice_id: GString) -> GString {
+        match &mut self.inner {
+            Some(s) => GString::from(&event_name(s.choose_dialogue(&choice_id.to_string()))),
+            None => GString::from("none"),
+        }
+    }
+
+    #[func]
+    fn close_dialogue(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.close_dialogue();
+        }
+    }
+
     /// Model placements for the current town state (Oakhaven landmarks,
     /// blacksmith lot mount, ActRaiser tier growth) as JSON.
     #[func]
