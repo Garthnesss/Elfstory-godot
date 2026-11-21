@@ -150,3 +150,15 @@ and glTF inspection rather than assumed:
   decimated TRELLIS canopy is not strictly watertight (shell
   intersections, invisible in renders) - accepted knowingly.
 - Verified in-game with a rendered screenshot before commit.
+
+## Nov 21, 2026 - style direction: textured buildings (Garth)
+- The flat-color Track A rebuilds read bland next to the TRELLIS
+  concepts (Garth, Nov 21). Blacksmith and Mira now ship the textured
+  TRELLIS originals at 25% decimation (~48k tris each, 3.1 / 3.3 MB).
+  The blacksmith stone forge with embers - missing from the flat
+  rebuild - is back by construction.
+- Mira albedo got a brightness lift ((v^0.85)*1.28): TRELLIS bakes
+  its own shading and read near-black under the game Filmic tonemap.
+  Verified in-game with a rendered screenshot before commit.
+- Direction recorded in tools/ASSET_GATE.md: hero buildings follow
+  the textured source-first path now.

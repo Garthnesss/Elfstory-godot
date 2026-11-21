@@ -62,3 +62,12 @@ but visually ruined oak rebuild was committed on self-grading):
   source — voxel/retopo wraps destroy the leaf detail (proven twice,
   Nov 20). For foliage, the visual gate above decides; state the
   watertight counts and the trade-off in the pack for Garth's call.
+
+## Direction change - Nov 21, 2026 (Garth)
+- Hero buildings no longer use the Track A flat-color rebuild: it
+  read bland against the TRELLIS concepts. Buildings follow the
+  source-first textured path instead: TRELLIS original, scaled to
+  the shipped footprint, UV-preserving decimation to ~25% (~48k
+  tris, ~3 MB), plus an albedo brightness lift when the bake reads
+  dark in-game. The < 500 KB Track A budget above now applies only
+  to remaining flat arch-kit props.
