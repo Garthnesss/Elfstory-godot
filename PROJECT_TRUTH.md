@@ -1,6 +1,9 @@
 # ElfStory — Project Truth
 Status: The Combined Model was approved by Garth 2026-11-17 12:53 PST ("that combined model works — we will just have to try it"). This repo (Garthnesss/ElfStoryReborn) was loaded 2026-11-17 from frozen Elfstory3d at 6df25947ec73fce8a036829fa71659408ab30190 (branch frozen-v1), cloned whole and subtractive. Phase 0 is the prototype spike described at the end of this file.
 
+## Scope is still forming (Garth, Nov 21, 2026)
+Garth doesn't have the full scope of how ElfStory should turn out yet. It will keep changing as we build, until he says it's settled. Everything below is the current direction, not a final spec. When he makes a new call, follow it and update the docs with a dated note.
+
 ## What ElfStory is now
 A 3D roguelite dungeon crawler where you rebuild Oakhaven between runs, and the rebuilt town significantly changes the next runs. Title: ElfStory. Repo: Garthnesss/ElfStoryReborn. Base: frozen Elfstory3d (frozen-v1 @ 6df2594) cloned whole, subtractive.
 

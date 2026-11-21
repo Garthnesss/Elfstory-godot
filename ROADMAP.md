@@ -1,6 +1,8 @@
 # ElfStory Reborn (Godot 4 + Rust) — Roadmap
 
-Direction is locked in `PROJECT_TRUTH.md` (Combined Model: Dark Cloud majors + ActRaiser growth, modern stylized 3D indie RPG aesthetic, desktop standalone first).
+Current direction is in `PROJECT_TRUTH.md` (Combined Model: Dark Cloud majors + ActRaiser growth, modern stylized 3D indie RPG aesthetic, desktop standalone first).
+
+**Scope is still forming (Garth, Nov 21, 2026).** The full shape of the game isn't decided yet and will change as we build, until Garth says it's settled. Treat this roadmap as the current plan, not a contract: when Garth makes a new call, update the affected docs with a dated note rather than defending the old plan.
 
 ## Milestone 0 — Repo Bootstrap & Toolchain (DONE 2026-11-20)
 - [x] Install Rust toolchain (`rustup` / `rustc` / `cargo`) on Apple Silicon Mac alongside Godot 4.7.2 (`/Applications/Godot.app`).
@@ -35,3 +37,10 @@ Port the vertical slice from `/Users/gerth/Projects/elfstoryreborn/src/game/` in
 - [ ] Skills in combat (skill behaviors on top of the ported combat core).
 - [ ] Native macOS `.app` export — no export preset exists yet; the game only runs inside Godot.
 - [ ] Remaining procedural boxes in Oakhaven (cottages/stalls) — style follows the Nov 21 textured-source direction in `tools/ASSET_GATE.md`, not flat Track A.
+
+## Presentation pass — Godot Asset Library add-ons (picked Nov 21, 2026)
+Full survey and reasoning: `docs/godot-asset-library-shortlist.md`. Every visual add-on goes through `tools/ASSET_GATE.md` and Garth's approval before commit.
+- [ ] Combat feel (picked first): REEBOO Stylized VFX sample (hit spark / slash / pickup sparkle), Kenney Particle Pack, Kenney RPG Audio + Interface Sounds. Needs a presentation event feed from the Rust core (hits, kills, loot, doors) since the snapshot alone doesn't say what just happened.
+- [ ] Later candidates: grass/foliage (Simple Grass Textured or Open Stylized 3D grass), Debug Draw 3D (dev), Phantom Camera (polish).
+- Skipped for now: Sky3D (fights golden hour), dialogue add-ons (dialogue lives in Rust), Terrain3D (tile grid), flat low-poly model packs (style rejected).
+
