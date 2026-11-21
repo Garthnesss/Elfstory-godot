@@ -264,3 +264,10 @@ and glTF inspection rather than assumed:
 - **Review:** two rounds of in-game captures at tactical and chase zoom. Garth's round-1 notes (too busy, not lush enough, too yellow, hide the grid) were all addressed; he approved round 2.
 - **Capture hooks** (dev only): `--elfstory-warp=<zone>[,x,y]` (debug builds) and `--elfstory-chase` alongside `--elfstory-capture=<png>`.
 - **Verified:** cargo test 101/101, headless RUN1 check OK, all captures render with no script errors. Frame rate not measured (roughly a quarter-million extra triangles per zone).
+
+## Platypus feet (Nov 21, 2026)
+
+- **`oakhaven_platypus.glb` rebuilt from its TRELLIS source** (`~/GLocalLM/workspace/3d/oakhaven_platypus-20261119-225817.glb`). The Nov 19 watertight retopo (2,359 quads) had turned the webbed toes and claws into smooth paddles. The new model is 49,017 tris and 2.26 MB with a 2048px baked albedo, and the toes, webbing and claws match the source.
+- **New tool `tools/blender_decimate_source.py`:** welded-vertex import → Collapse decimate (UV-delimited) → smooth-by-angle 35° → bottom-center origin → optional `--rebake` onto fresh Smart UVs. Route notes are in `docs/asset-generation-pipeline.md`.
+- **Gate:** routes compared side by side against the source (decimation at 8/15/25/35%, welded vs unwelded, 12k-quad retopo, 1024 vs 2048 bake). Two adversarial review rounds. Garth approved shipping with the watertight exception and the accepted close-zoom flaws recorded in `tools/ASSET_GATE.md`. The platypus appears at Population Tier 2. It was checked in-game with a temporary placement and camera, and nothing from that patch was committed.
+- **Verified:** clean Godot re-import, and the headless RUN1 check is OK.

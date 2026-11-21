@@ -73,3 +73,15 @@ but visually ruined oak rebuild was committed on self-grading):
   tris, ~3 MB), plus an albedo brightness lift when the bake reads
   dark in-game. The < 500 KB Track A budget above now applies only
   to remaining flat arch-kit props.
+
+## Platypus exception - Nov 21, 2026 (Garth)
+- `oakhaven_platypus.glb` ships non-watertight (6,636 boundary /
+  1,379 non-manifold edges; the raw source has 1,947 / 8,659). The
+  watertight QuadriFlow retopo (both 2.5k and 12k quads) lost the
+  webbed toes and claws; Garth chose source fidelity. Built with
+  `tools/blender_decimate_source.py --ratio 0.25 --rebake --tex-size 2048`
+  (49,017 tris, 2.26 MB).
+- Adversarial review findings accepted at ship: a faint orange bake
+  streak and smudges on the front-right leg, the source's fine orange
+  speckle mostly lost, the model 3-5 RGB units darker than the source.
+  All are close-zoom only; the feet are mostly in grass in-game.

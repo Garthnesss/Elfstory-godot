@@ -48,7 +48,7 @@ Full survey and reasoning: `docs/godot-asset-library-shortlist.md`. Every visual
 ## Next queue (Garth, Nov 21, 2026 — start next session)
 Garth picked all four; take them in this order unless he says otherwise:
 1. [x] **Grass & foliage** — done Nov 21: in-house meadow grass + wildflowers (`godot/grass.gd`, `grass.gdshader`) over Oakhaven + Silverwood Vale floor tiles; no add-on needed. Approved by Garth after two review rounds.
-2. [ ] **Platypus feet** — side-by-side of shipped `oakhaven_platypus.glb` vs raw TRELLIS source (`~/GLocalLM/workspace/3d/`) at close zoom; fix-or-accept is Garth's call.
+2. [x] **Platypus feet** — done Nov 21: rebuilt from the TRELLIS source (welded 25% decimation + Smart-UV re-bake, `tools/blender_decimate_source.py --rebake`); toes, webbing and claws restored. Garth shipped it with the watertight exception.
 3. [ ] **Title & save slots** — real title screen, 3 save slots (core already supports them), difficulty choice (Story / Standard / Hardened) at New Game, app icon.
 4. [ ] **Town loop feel** — ActRaiser growth visible in Oakhaven (houses/fields appearing per Population Tier) and the rebuilt-Blacksmith moment on its chosen lot.
 Also open: remaining combat gaps (companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste); Garth's playtest notes from the app.
