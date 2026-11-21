@@ -35,7 +35,7 @@ Port the vertical slice from `/Users/gerth/Projects/elfstoryreborn/src/game/` in
 - [x] Port all 18 NPCs, comedy-tone dialogue/barks (`garthVoice`), 10 quests, set-piece rooms, 17 enemy archetypes, companions, difficulty tiers, Hardcore, NG+ ascension (preserving `blacksmith` stock), and gamepad navigation.
 - [x] World session behaviors: vault door, Seal Brazier hall, waystone attunement, chests (ordinary / vault / boss hoard / satchel), restorative braziers (Nov 21).
 - [x] Skills in combat (Nov 21): 8 actives + passives + prodigy hooks, aiming/hotbar/learning, and the TS enemy turn (statuses, DoTs, dodge, intents). Not yet: companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste.
-- [ ] Native macOS `.app` export — no export preset exists yet; the game only runs inside Godot.
+- [x] Native macOS `.app` export (Nov 21): `tools/build_app.sh` → `build/ElfStory.app` (universal, ad-hoc signed, not notarized).
 - [ ] Remaining procedural boxes in Oakhaven (cottages/stalls) — style follows the Nov 21 textured-source direction in `tools/ASSET_GATE.md`, not flat Track A.
 
 ## Presentation pass — Godot Asset Library add-ons (picked Nov 21, 2026)

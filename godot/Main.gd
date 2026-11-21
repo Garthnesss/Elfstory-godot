@@ -51,6 +51,10 @@ const SFX := {
 	"shadowstep": ["res://assets/audio/rpg/cloth1.ogg"],
 	"ui_click": ["res://assets/audio/ui/click_001.wav"],
 }
+const STEP_SFX := [
+	"res://assets/audio/rpg/footstep00.ogg", "res://assets/audio/rpg/footstep01.ogg",
+	"res://assets/audio/rpg/footstep02.ogg", "res://assets/audio/rpg/footstep03.ogg",
+]
 const SFX_VOICES := 6
 const SLASH_SCALE := 0.55 # slash.tscn spans ~3 units; tiles are 1
 const SPARKLE_SECONDS := 0.8
@@ -137,6 +141,21 @@ func _ready() -> void:
 	session = ElfStorySession.new()
 	session.new_game("Garth", "Vanguard", 20261120)
 	refresh()
+	_maybe_smoke_capture()
+
+
+## Smoke test for exported builds: `ElfStory -- --elfstory-capture=/abs/shot.png`
+## renders ~2 s of Oakhaven, saves the frame and quits. No effect otherwise.
+func _maybe_smoke_capture() -> void:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--elfstory-capture="):
+			var path := arg.trim_prefix("--elfstory-capture=")
+			await get_tree().create_timer(2.0).timeout
+			await RenderingServer.frame_post_draw
+			var err := get_viewport().get_texture().get_image().save_png(path)
+			print("ELFSTORY_CAPTURE ", path, " err=", err)
+			get_tree().quit(0 if err == OK else 1)
+			return
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +214,13 @@ func do_move(screen_dir: Vector2i) -> void:
 	var world_dir := screen_dir_to_world(screen_dir)
 	if world_dir == Vector2i.ZERO:
 		return
+	var before: Dictionary = state.get("player", {})
 	var ev: String = session.move_player(world_dir.x, world_dir.y)
 	handle_event(ev)
 	refresh()
+	var after: Dictionary = state.get("player", {})
+	if int(after.get("x", 0)) != int(before.get("x", 0)) or int(after.get("y", 0)) != int(before.get("y", 0)):
+		play_step()
 
 
 func do_interact() -> void:
@@ -1201,6 +1224,21 @@ func play_sfx(kind: String) -> void:
 	var ap: AudioStreamPlayer = sfx_players[sfx_next]
 	sfx_next = (sfx_next + 1) % sfx_players.size()
 	ap.stream = stream
+	ap.volume_db = 0.0
+	ap.play()
+
+
+## Footstep on a successful move (a random one of four, slightly quieter).
+func play_step() -> void:
+	var path: String = STEP_SFX[randi() % STEP_SFX.size()]
+	if not sfx_cache.has(path):
+		sfx_cache[path] = load(path) if ResourceLoader.exists(path) else null
+	if sfx_cache[path] == null:
+		return
+	var ap: AudioStreamPlayer = sfx_players[sfx_next]
+	sfx_next = (sfx_next + 1) % sfx_players.size()
+	ap.stream = sfx_cache[path]
+	ap.volume_db = -8.0
 	ap.play()
 
 

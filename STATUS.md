@@ -228,3 +228,16 @@ and glTF inspection rather than assumed:
 - **Found, not changed:** serde writes the `string_enum!` types as Rust variant names (`"ShieldBash"`), not TS ids (`"shield_bash"`). This affects save JSON (`SAVE_VERSION` 1) and `state_json`'s player block. It's internally consistent, but not TS-save-compatible.
 - **Verified:** cargo test 97/97 (13 new: each active skill, stun skip, DoT ticks both ways, mana regen, kill passives, learning, targeting order and cycling, id parsing). The gdext build is clean, and the headless RUN1 check and Main scene run with no script errors. In-game captures on Floor 2 show the aim tile, the cleave slash, the bash flash with a "cd 2t" hotbar, and a telegraph tile; Oakhaven's textured buildings still render.
 - **Local noise:** the editor import cache logs UID warnings for `*_Image_N.webp` (the files are absent and `*.import` is gitignored). Textures still render.
+
+## macOS app + combat sounds (Nov 21, 2026)
+
+- **`ElfStory.app` builds:** run `tools/build_app.sh` (add `--smoke` to launch it, save `build/smoke.png` and quit). Output is `build/ElfStory.app`: 188 MB, gitignored. The script does a release Rust build, then exports the `macOS` preset in `godot/export_presets.cfg`.
+  - The binary is universal, because the official template ships only universal; it runs natively on Apple Silicon. The bridge `.dylib` is arm64 and bundled in `Contents/Frameworks`.
+  - Ad-hoc signed, not notarized: it runs on this Mac. On another Mac it needs right-click → Open the first time.
+  - Needs Godot 4.7.2 export templates, installed Nov 21 (macOS + version.txt) in `~/Library/Application Support/Godot/export_templates/4.7.2.stable/`.
+  - Project setting `textures/vram_compression/import_etc2_astc=true` is required for arm64/universal exports.
+  - `elfstory.gdextension` gained `macos.release`.
+- **Bug found by the export and fixed:** the extracted textures of the textured blacksmith, Mira and oak (`*_Image_0/1.webp`) were never committed and had vanished from disk. The editor hid this by drawing from its import cache, but the exported game failed to load all three models. A forced re-import restored them from the `.glb` files (Mira's albedo lift is baked into the `.glb`). They're now committed. Verified: pixel comparison against the pre-fix editor render shows mean difference 0.0 / 0.0 / 0.02 on blacksmith, Mira and oak. This also clears the import-cache UID warnings noted earlier.
+- **Smoke hook:** `Main.gd` honours `-- --elfstory-capture=<png>`: it renders about 2 s of Oakhaven, saves the frame and quits. It does nothing otherwise.
+- **Combat sounds:** Kenney RPG Audio (CC0, downloaded by Garth from kenney.nl). Eight files fill the existing combat cues (slash, crit, kill, hurt, coins, chest latch, vault door, Iron Fortress), and four footsteps play on each successful step at −8 dB. Sound is still not checked by ear.
+- **Verified:** the exported app launches with no errors and renders textured Oakhaven, the HUD and the hotbar (smoke capture reviewed). cargo test 99/99, headless checks green.

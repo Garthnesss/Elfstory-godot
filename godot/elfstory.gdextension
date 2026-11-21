@@ -8,3 +8,4 @@ compatibility_minimum = "4.7"
 ; Path is relative to this file (which lives in godot/), so ../rust is the
 ; Cargo workspace root of the sibling rust/ directory.
 macos.debug = "../rust/target/debug/libelfstory_gdext.dylib"
+macos.release = "../rust/target/release/libelfstory_gdext.dylib"
