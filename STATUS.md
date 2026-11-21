@@ -202,3 +202,29 @@ and glTF inspection rather than assumed:
 - **Sound:** an `SFX` table plays the first available file for each cue, plus a click on every UI button. In the project now: 8 Kenney Interface Sounds (CC0) in `assets/audio/ui`. The Asset Library's Kenney RPG Audio port was deleted from GitHub (404), so combat hit sounds point at `assets/audio/rpg/*.ogg` and stay silent until that pack is added from kenney.nl.
 - **Kenney Particle Pack** (CC0) is downloaded but not in the project; it's held for the brazier, forge and waystone pass.
 - **Verified:** headless checks green. In-game captures on Floor 2: the chase camera shows the slash and impact rings, and the tactical view shows the chest sparkle as a warm glow, subtle at that zoom. Sound is untested by ear.
+
+## Skills in combat (Nov 21, 2026)
+
+- **New `combat_turn.rs`** ports the combat half of App.tsx:
+  - **Melee:** lifesteal, bleed-on-crit / chill-on-hit affixes, Soul Siphon r3 crit mana, Flexible Combat follow-up. Kills still give enemies their turn, as in TS.
+  - **All 8 active skills** with exact TS numbers: Sundering Cleave, Bastion Bash, Iron Fortress, Shadowstep, Viper Edge, Executioner's Mark, Ember Lance, Rime Nova. Arcane Echo, Carry the World and Arcane Conduit are included. Invalid targets log the TS hint and cost nothing.
+  - **Kill passives:** Crimson Vigor r3, Soul Siphon, mana_on_kill.
+  - **Aiming:** hotbar trigger, auto-aim at the nearest valid enemy, cycle, confirm, cancel, plus a keyboard aim cursor for Shadowstep. Learning skills and assigning the hotbar work as in TS.
+- **The enemy turn is now the TS `runEnemyTurns` combat core**, replacing the M2 slice:
+  - The player's statuses, cooldowns and prodigy cooldowns tick, with 1 MP every 2 turns (+2 per turn in town), regen, and DoTs on the player.
+  - The Draconic Will cleanse and resist, Cauterize and Spine of the World prodigies work.
+  - Enemies: skill cooldowns, DoT ticks, status countdown, stunned enemies skip, Shielding Rune.
+  - Telegraphed intents resolve with dodge, 0.7 DEF mitigation, minimum 2, and skill ailments. Enemy Shadowstep blinks.
+  - Fresh intents prime every turn, including ranged ones; the slice only primed adjacent windups. Adjacent strikes use dodge, Phantom Reflex mana and counter, chill (×0.65 ATK) and thorns.
+  - Visibility is computed (sight radius 8): only enemies that see the player get alerted, and Shadowstep needs a visible tile. Diagonal moves can't cut wall corners (TS rule).
+  - Wake in Oakhaven now clears statuses and cooldowns (TS respawn).
+- **Bridge:** `trigger_hotbar`, `confirm_target`, `cycle_target`, `move_aim`, `cancel_aim`, `wait_turn`, `skills_json`, `learn_skill`. The snapshot adds the hotbar, the armed skill and aimed target, and enemy statuses and intents. String enums gained `parse()` (TS ids).
+- **Godot:**
+  - Hotbar (bottom-right; keys 1–5, click works too); while aiming, the movement keys move the cursor, Tab cycles, F/Enter casts, Esc cancels.
+  - Yellow aim tile, red telegraph tiles where windups will land, skills panel (K) with Learn buttons, Space or `.` to wait, statuses and skill points in the HUD, VFX for skill cues.
+- **TS quirks kept as-is, for Garth to decide:**
+  1. Statuses count down before the stun check, so a 1-turn stun (Bastion Bash r1–2, Rime Nova r2–3) has expired by the time the enemy acts. It only cancels a telegraphed attack. Seen in-game: the bashed sentinel hit back the same turn.
+  2. Ember Lance r2 says "pierces 1 tile behind", but TS never implemented it.
+- **Found, not changed:** serde writes the `string_enum!` types as Rust variant names (`"ShieldBash"`), not TS ids (`"shield_bash"`). This affects save JSON (`SAVE_VERSION` 1) and `state_json`'s player block. It's internally consistent, but not TS-save-compatible.
+- **Verified:** cargo test 97/97 (13 new: each active skill, stun skip, DoT ticks both ways, mana regen, kill passives, learning, targeting order and cycling, id parsing). The gdext build is clean, and the headless RUN1 check and Main scene run with no script errors. In-game captures on Floor 2 show the aim tile, the cleave slash, the bash flash with a "cd 2t" hotbar, and a telegraph tile; Oakhaven's textured buildings still render.
+- **Local noise:** the editor import cache logs UID warnings for `*_Image_N.webp` (the files are absent and `*.import` is gitignored). Textures still render.

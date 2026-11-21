@@ -17,6 +17,10 @@ macro_rules! string_enum {
             pub fn as_str(&self) -> &'static str {
                 match self { $(Self::$variant => $s),+ }
             }
+            /// Inverse of `as_str` (the TS string id).
+            pub fn parse(s: &str) -> Option<Self> {
+                match s { $($s => Some(Self::$variant),)+ _ => None }
+            }
         }
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

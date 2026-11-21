@@ -2,6 +2,7 @@
 //! Ported from elfstoryreborn (TS) Milestones 1-3 — see HANDOFF.md guardrails.
 
 pub mod combat;
+pub mod combat_turn;
 pub mod difficulty;
 pub mod loot;
 pub mod npcs;

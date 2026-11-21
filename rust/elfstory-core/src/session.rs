@@ -16,7 +16,7 @@
 //! - Wake in Oakhaven heals to full; the TS gold death toll is Normal-mode
 //!   App logic (M3).
 
-use crate::combat::{calculate_player_hit, choose_enemy_intent, find_path_next_step};
+
 use crate::difficulty::DifficultyTier;
 use crate::loot::{create_consumable, create_named_relic, create_starter_item, ItemIdGen};
 use crate::rng::Rng;
@@ -82,6 +82,9 @@ pub struct GameSession {
     /// Bumped whenever a tile in a zone changes (doors unsealed, chests
     /// looted...) so the front-end knows to rebuild terrain.
     pub tile_rev: u32,
+    /// Targeted skill waiting for a target (TS armedSkill / aimedTarget).
+    pub armed_skill: Option<SkillId>,
+    pub aimed_target: Option<Pos>,
     /// Presentation cues since the last `take_fx` (capped at FX_CAP).
     pub fx: Vec<FxEvent>,
     /// Dialogue set_flag values for keys outside the typed WorldFlags.
@@ -183,6 +186,8 @@ impl GameSession {
             active_dialogue: None,
             active_prompt: None,
             tile_rev: 0,
+            armed_skill: None,
+            aimed_target: None,
             fx: vec![],
             extra_flags: HashMap::new(),
             log: vec![],
@@ -191,6 +196,7 @@ impl GameSession {
             seq: 1000,
         };
         s.say("Welcome to Oakhaven. The Reliquary below holds what the town needs.");
+        s.refresh_visibility();
         s
     }
 
@@ -280,7 +286,10 @@ impl GameSession {
             .iter()
             .position(|e| e.x == nx && e.y == ny && e.hp > 0);
         if let Some(idx) = enemy_idx {
-            return self.bump_attack(idx);
+            if !self.in_town() {
+                self.delve_progress += 1;
+            }
+            return self.melee_attack(idx);
         }
         let tile = match self.tile_at(nx, ny) {
             Some(t) => t,
@@ -299,9 +308,16 @@ impl GameSession {
         if self.zone().npcs.iter().any(|n| n.x == nx && n.y == ny) {
             return SessionEvent::None;
         }
+        // TS: no diagonal corner-cutting past blocking walls.
+        if dx != 0 && dy != 0 {
+            let side_a = self.tile_at(nx, self.player.y).map_or(false, |t| t.walkable);
+            let side_b = self.tile_at(self.player.x, ny).map_or(false, |t| t.walkable);
+            if !side_a || !side_b {
+                return SessionEvent::None;
+            }
+        }
         self.player.x = nx;
         self.player.y = ny;
-        self.player.turns_elapsed += 1;
         if !self.in_town() {
             self.delve_progress += 1;
         }
@@ -345,58 +361,10 @@ impl GameSession {
             }
             _ => {}
         }
-        self.enemy_turn();
-        if self.player.hp <= 0 {
-            return self.wake_in_oakhaven();
-        }
-        SessionEvent::None
+        self.run_enemy_turns()
     }
 
-    fn bump_attack(&mut self, idx: usize) -> SessionEvent {
-        let stats = self.derived();
-        let target = self.zone().enemies[idx].clone();
-        let hit = calculate_player_hit(
-            &self.player,
-            &target,
-            1.0,
-            false,
-            false,
-            0.0,
-            &stats,
-            &mut self.rng,
-        );
-        self.player.turns_elapsed += 1;
-        if !self.in_town() {
-            self.delve_progress += 1;
-        }
-        let mut event = SessionEvent::None;
-        {
-            let zone = self.zone_mut();
-            zone.enemies[idx].hp -= hit.damage;
-        }
-        let (adx, ady) = (target.x - self.player.x, target.y - self.player.y);
-        self.fx_dir(if hit.is_crit { "crit" } else { "hit" }, target.x, target.y, adx, ady);
-        if hit.is_crit {
-            self.say(&format!("Critical! You hit {} for {}.", target.name, hit.damage));
-        } else {
-            self.say(&format!("You hit {} for {}.", target.name, hit.damage));
-        }
-        if hit.lifesteal_heal > 0 {
-            self.player.hp = (self.player.hp + hit.lifesteal_heal).min(stats.max_hp);
-        }
-        let dead = self.zone().enemies[idx].hp <= 0;
-        if dead {
-            event = self.on_enemy_killed(idx);
-        } else {
-            self.enemy_turn();
-        }
-        if self.player.hp <= 0 {
-            return self.wake_in_oakhaven();
-        }
-        event
-    }
-
-    fn on_enemy_killed(&mut self, idx: usize) -> SessionEvent {
+    pub(crate) fn on_enemy_killed(&mut self, idx: usize) -> SessionEvent {
         let enemy = self.zone_mut().enemies.remove(idx);
         self.fx("kill", enemy.x, enemy.y);
         self.player.kills += 1;
@@ -404,6 +372,7 @@ impl GameSession {
         self.delve_progress += 2;
         self.player.gold += enemy.gold_reward;
         self.say(&format!("{} falls. +{} gold.", enemy.name, enemy.gold_reward));
+        self.kill_passives();
         // XP with difficulty scaling + level-ups (TS curve: xpToNext x1.48).
         let xp = crate::difficulty::scale_xp_for_difficulty(enemy.xp_reward, self.tier, self.cycle);
         let event = self.gain_xp(xp);
@@ -428,73 +397,6 @@ impl GameSession {
             });
         }
         event
-    }
-
-    /// Every living enemy in the current zone takes its turn.
-    fn enemy_turn(&mut self) {
-        let stats = self.derived();
-        let (px, py) = (self.player.x, self.player.y);
-        let count = self.zone().enemies.len();
-        for i in 0..count {
-            if self.player.hp <= 0 {
-                break;
-            }
-            let enemy = self.zone().enemies[i].clone();
-            if enemy.hp <= 0 || enemy.pacified == Some(true) {
-                continue;
-            }
-            let dist = (enemy.x - px).abs().max((enemy.y - py).abs());
-            let sight = 8;
-            if dist > sight {
-                continue;
-            }
-            // Telegraph resolution / intent choice.
-            if let Some(intent) = enemy.intent.clone() {
-                if intent.target_tiles.iter().any(|t| t.x == px && t.y == py) {
-                    let dmg = (intent.damage - (stats.def as f64 * 0.65).round() as i32).max(1);
-                    self.player.hp -= dmg;
-                    self.fx_dir("player_hit", px, py, px - enemy.x, py - enemy.y);
-                    self.say(&format!("{} lands {} on you for {}.", enemy.name, intent.label, dmg));
-                }
-                self.zone_mut().enemies[i].intent = None;
-                continue;
-            }
-            if dist <= 1 {
-                // Choose intent (may telegraph a heavy hit for next turn).
-                let zone_snapshot = self.zone().clone();
-                let intent =
-                    choose_enemy_intent(&enemy, &self.player, &zone_snapshot, &mut self.rng);
-                match intent {
-                    Some(it) if it.kind == IntentType::HeavyWindup => {
-                        self.fx("windup", enemy.x, enemy.y);
-                        self.say(&format!("{} winds up: {}!", enemy.name, it.label));
-                        self.zone_mut().enemies[i].intent = Some(it);
-                    }
-                    _ => {
-                        let dmg = (enemy.atk - (stats.def as f64 * 0.65).round() as i32).max(1);
-                        self.player.hp -= dmg;
-                        self.fx_dir("player_hit", px, py, px - enemy.x, py - enemy.y);
-                        self.say(&format!("{} hits you for {}.", enemy.name, dmg));
-                    }
-                }
-            } else {
-                // Step toward the player.
-                let zone_snapshot = self.zone().clone();
-                if let Some(step) = find_path_next_step(&zone_snapshot, enemy.x, enemy.y, px, py) {
-                    let occupied = self
-                        .zone()
-                        .enemies
-                        .iter()
-                        .any(|e| e.hp > 0 && e.x == step.x && e.y == step.y);
-                    if !occupied && !(step.x == px && step.y == py) {
-                        let e = &mut self.zone_mut().enemies[i];
-                        e.x = step.x;
-                        e.y = step.y;
-                        e.alerted = true;
-                    }
-                }
-            }
-        }
     }
 
     fn transition_down(&mut self) -> SessionEvent {
@@ -635,6 +537,8 @@ impl GameSession {
         let entry = entry_override.unwrap_or(entry);
         self.player.x = entry.x;
         self.player.y = entry.y;
+        self.cancel_aim();
+        self.refresh_visibility();
         self.say(&format!("You enter {}.", self.zone().name));
         SessionEvent::ZoneChanged(id)
     }
@@ -701,6 +605,13 @@ impl GameSession {
         let spawn = self.zone().spawn_point;
         self.player.x = spawn.x;
         self.player.y = spawn.y;
+        // TS respawn reset: statuses, cooldowns and prodigy cooldowns clear.
+        self.player.statuses.clear();
+        self.player.cooldowns.clear();
+        self.player.prodigy_cooldowns = Some(Default::default());
+        self.player.first_strike_ready = true;
+        self.cancel_aim();
+        self.refresh_visibility();
         let d = self.derived();
         self.player.hp = d.max_hp;
         self.player.max_hp = d.max_hp;
@@ -1312,6 +1223,13 @@ impl GameSession {
                 "enemies": zone.enemies.iter().filter(|e| e.hp > 0).map(|e| json!({
                     "id": e.id, "name": e.name, "glyph": e.glyph, "x": e.x, "y": e.y,
                     "hp": e.hp, "maxHp": e.max_hp, "isBoss": e.is_boss.unwrap_or(false),
+                    "alerted": e.alerted,
+                    "statuses": e.statuses.iter().map(|st| json!({
+                        "kind": st.kind.as_str(), "turns": st.turns, "potency": st.potency,
+                    })).collect::<Vec<_>>(),
+                    "intent": e.intent.as_ref().map(|it| json!({
+                        "label": it.label, "damage": it.damage, "targetTiles": it.target_tiles,
+                    })),
                 })).collect::<Vec<_>>(),
                 "npcs": zone.npcs.iter().map(|n| json!({
                     "id": n.id, "name": n.name, "title": n.title, "glyph": n.glyph, "x": n.x, "y": n.y,
@@ -1329,6 +1247,9 @@ impl GameSession {
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "carriedTownTags": self.carried_town_tags(),
             "prompt": self.active_prompt.as_ref().map(|p| p.kind.as_str()),
+            "hotbar": self.hotbar_json(),
+            "armedSkill": self.armed_skill.map(|k| k.as_str()),
+            "aimedTarget": self.aimed_target,
             "log": self.log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
         })
     }
@@ -1374,6 +1295,16 @@ mod tests {
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (nx, ny) = (cx + dx, cy + dy);
                 if visited.contains(&(nx, ny)) || !passable(nx, ny) {
+                    continue;
+                }
+                // The game forbids diagonal corner-cutting past walls.
+                let walk = |x: i32, y: i32| {
+                    zone.tiles
+                        .get(y as usize)
+                        .and_then(|r| r.get(x as usize))
+                        .map_or(false, |t| t.walkable)
+                };
+                if dx != 0 && dy != 0 && (!walk(cx + dx, cy) || !walk(cx, cy + dy)) {
                     continue;
                 }
                 visited.insert((nx, ny));

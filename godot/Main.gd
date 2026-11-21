@@ -46,6 +46,9 @@ const SFX := {
 	"unseal": ["res://assets/audio/rpg/doorOpen_1.ogg", "res://assets/audio/ui/bong_001.wav"],
 	"level_up": ["res://assets/audio/ui/confirmation_004.wav"],
 	"prompt": ["res://assets/audio/ui/question_001.wav"],
+	"iron_fortress": ["res://assets/audio/rpg/metalPot1.ogg", "res://assets/audio/ui/maximize_006.wav"],
+	"frost_nova": ["res://assets/audio/ui/maximize_006.wav"],
+	"shadowstep": ["res://assets/audio/rpg/cloth1.ogg"],
 	"ui_click": ["res://assets/audio/ui/click_001.wav"],
 }
 const SFX_VOICES := 6
@@ -95,6 +98,11 @@ var merchant_panel: PanelContainer
 var merchant_title: Label
 var merchant_rows: VBoxContainer
 var current_merchant_id := ""
+var hotbar_box: HBoxContainer
+var skills_panel: PanelContainer
+var skills_box: VBoxContainer
+var aim_marker: MeshInstance3D
+var telegraph_root: Node3D
 var prompt_open := false # the dialogue panel is showing a world-tile prompt
 
 
@@ -113,6 +121,12 @@ func _ready() -> void:
 	fx_root = Node3D.new()
 	fx_root.name = "FX"
 	add_child(fx_root)
+	telegraph_root = Node3D.new()
+	telegraph_root.name = "Telegraphs"
+	add_child(telegraph_root)
+	aim_marker = make_tile_marker(Color(1.0, 0.85, 0.25, 0.75), 0.06)
+	aim_marker.visible = false
+	add_child(aim_marker)
 	for i in SFX_VOICES:
 		var ap := AudioStreamPlayer.new()
 		add_child(ap)
@@ -153,6 +167,10 @@ func refresh() -> void:
 		current_build_key = build_key
 		rebuild_world()
 	refresh_entities()
+	update_combat_overlays()
+	update_hotbar()
+	if skills_panel.visible:
+		rebuild_skills_panel()
 	play_fx()
 
 
@@ -618,14 +636,42 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_BRACKETRIGHT:
 				cam_yaw -= PI * 0.5
 			KEY_F, KEY_ENTER, KEY_KP_ENTER:
-				do_interact()
+				if is_aiming():
+					do_session_action(func() -> String: return session.confirm_target())
+				else:
+					do_interact()
+			KEY_K:
+				toggle_skills_panel()
+			KEY_ESCAPE:
+				if is_aiming():
+					session.cancel_aim()
+					refresh()
+				elif skills_panel.visible:
+					skills_panel.hide()
 			_:
-				if merchant_panel.visible or dialogue_panel.visible:
-					return # modal is up; don't walk behind it
-				var d := key_dir(k.physical_keycode)
+				if merchant_panel.visible or dialogue_panel.visible or skills_panel.visible:
+					return # modal is up; don't act behind it
+				var code := k.physical_keycode
+				if code >= KEY_1 and code <= KEY_5:
+					var slot := int(code - KEY_1)
+					do_session_action(func() -> String: return session.trigger_hotbar(slot))
+					return
+				if code == KEY_TAB:
+					session.cycle_target()
+					refresh()
+					return
+				if code == KEY_SPACE or code == KEY_PERIOD:
+					do_session_action(func() -> String: return session.wait_turn())
+					return
+				var d := key_dir(code)
 				if d != Vector2i.ZERO:
-					do_move(d)
-					move_timer = MOVE_REPEAT
+					if is_aiming():
+						var w := screen_dir_to_world(d)
+						session.move_aim(w.x, w.y)
+						refresh()
+					else:
+						do_move(d)
+						move_timer = MOVE_REPEAT
 
 
 ## Screen-space step for a key: (x = right, y = away from camera).
@@ -653,7 +699,7 @@ func key_dir(k: int) -> Vector2i:
 ## Held-key walking: poll the same key set every MOVE_REPEAT seconds.
 func update_held_movement(delta: float) -> void:
 	move_timer -= delta
-	if move_timer > 0.0 or merchant_panel.visible or dialogue_panel.visible:
+	if move_timer > 0.0 or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
 		return
 	var held := Vector2i.ZERO
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
@@ -753,6 +799,40 @@ func build_ui() -> void:
 	dlg_box.add_child(dlg_close)
 	dialogue_panel.hide()
 
+	# Skill hotbar, bottom-right: keys 1-5.
+	var hotbar_panel := make_panel()
+	hotbar_panel.anchor_left = 1.0
+	hotbar_panel.anchor_right = 1.0
+	hotbar_panel.anchor_top = 1.0
+	hotbar_panel.anchor_bottom = 1.0
+	hotbar_panel.offset_left = -590
+	hotbar_panel.offset_right = -10
+	hotbar_panel.offset_top = -78
+	hotbar_panel.offset_bottom = -10
+	layer.add_child(hotbar_panel)
+	hotbar_box = HBoxContainer.new()
+	hotbar_box.add_theme_constant_override("separation", 6)
+	hotbar_panel.add_child(hotbar_box)
+
+	# Skills panel (K), centred.
+	skills_panel = make_panel()
+	skills_panel.anchor_left = 0.5
+	skills_panel.anchor_right = 0.5
+	skills_panel.anchor_top = 0.5
+	skills_panel.anchor_bottom = 0.5
+	skills_panel.offset_left = -330
+	skills_panel.offset_right = 330
+	skills_panel.offset_top = -270
+	skills_panel.offset_bottom = 270
+	layer.add_child(skills_panel)
+	var sk_scroll := ScrollContainer.new()
+	sk_scroll.custom_minimum_size = Vector2(640, 520)
+	skills_panel.add_child(sk_scroll)
+	skills_box = VBoxContainer.new()
+	skills_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sk_scroll.add_child(skills_box)
+	skills_panel.hide()
+
 	# Merchant modal, centred.
 	merchant_panel = make_panel()
 	merchant_panel.anchor_left = 0.5
@@ -815,6 +895,13 @@ func update_hud() -> void:
 		int(pl["level"]), int(pl["gold"]),
 		int(derived.get("atk", 0)), int(derived.get("def", 0)),
 	]
+	var sts: PackedStringArray = []
+	for st in pl.get("statuses", []):
+		sts.append("%s %dt" % [str(st["kind"]).capitalize(), int(st["turns"])])
+	if not sts.is_empty():
+		hud_body.text += "\n" + " · ".join(sts)
+	if int(pl.get("skillPoints", 0)) > 0:
+		hud_body.text += "\n%d skill point(s) — press K" % int(pl["skillPoints"])
 
 
 func text_bar(cur: int, maxv: int, width: int = 14) -> String:
@@ -1077,6 +1164,14 @@ func play_fx() -> void:
 				spawn_vfx(VFX_HIT, at, 0.7)
 			"unseal":
 				spawn_vfx(VFX_HIT, at + Vector3(0, 0.6, 0), 2.0)
+			"shield_bash":
+				spawn_vfx(VFX_HIT, at, 1.4)
+			"frost_nova":
+				spawn_vfx(VFX_HIT, at, 3.0)
+			"iron_fortress", "shadowstep":
+				spawn_sparkle(at, 1.6)
+			"ember_lance", "venom_tip", "executioners_mark":
+				spawn_vfx(VFX_HIT, at, 1.2)
 			"pickup", "chest", "brazier", "waystone":
 				spawn_sparkle(at, 1.0)
 			"level_up":
@@ -1116,4 +1211,132 @@ func sfx_stream(kind: String) -> AudioStream:
 		if sfx_cache[path] != null:
 			return sfx_cache[path]
 	return null
+
+
+# ---------------------------------------------------------------------------
+# Skills: hotbar, aiming, telegraphs, skills panel (rules in combat_turn.rs)
+# ---------------------------------------------------------------------------
+
+func is_aiming() -> bool:
+	return state.get("armedSkill") != null
+
+
+## Forward one session call that returns a bridge event, then repaint.
+func do_session_action(call: Callable) -> void:
+	var ev: String = call.call()
+	handle_event(ev)
+	refresh()
+
+
+func update_hotbar() -> void:
+	clear_children(hotbar_box)
+	var armed = state.get("armedSkill")
+	var slots: Array = state.get("hotbar", [])
+	for i in slots.size():
+		var slot = slots[i]
+		var b := make_button("")
+		b.custom_minimum_size = Vector2(102, 52)
+		b.add_theme_font_size_override("font_size", 12)
+		if slot == null:
+			b.text = "%d\n—" % (i + 1)
+			b.disabled = true
+		else:
+			var sk: Dictionary = slot
+			var cd := int(sk.get("cooldown", 0))
+			var tail := "%d MP" % int(sk.get("manaCost", 0))
+			if cd > 0:
+				tail = "cd %dt" % cd
+			b.text = "%d %s %s\n%s" % [i + 1, str(sk.get("glyph", "")), str(sk.get("name", "")), tail]
+			b.tooltip_text = "%s · rank %d · range %d" % [str(sk.get("name", "")), int(sk.get("rank", 0)), int(sk.get("range", 0))]
+			if not bool(sk.get("ready", false)):
+				b.modulate = Color(0.6, 0.6, 0.65)
+			if armed != null and str(armed) == str(sk.get("id", "")):
+				b.modulate = Color(1.0, 0.9, 0.4)
+			b.pressed.connect(func() -> void:
+				do_session_action(func() -> String: return session.trigger_hotbar(i)))
+		hotbar_box.add_child(b)
+
+
+## Aim cursor on the aimed tile; red tiles where telegraphed enemy attacks
+## will land next turn.
+func update_combat_overlays() -> void:
+	var aim = state.get("aimedTarget")
+	aim_marker.visible = is_aiming() and aim != null
+	if aim_marker.visible:
+		aim_marker.position = Vector3(float(aim["x"]), 0.04, float(aim["y"]))
+	clear_children(telegraph_root)
+	var zone: Dictionary = state["zone"]
+	for e in zone.get("enemies", []):
+		var intent = e.get("intent")
+		if intent == null:
+			continue
+		for t in intent.get("targetTiles", []):
+			var m := make_tile_marker(Color(0.95, 0.15, 0.1, 0.45), 0.03)
+			m.position = Vector3(float(t["x"]), 0.02, float(t["y"]))
+			telegraph_root.add_child(m)
+
+
+func make_tile_marker(color: Color, height: float) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(0.92, height, 0.92)
+	mi.mesh = box
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = color
+	mi.material_override = mat
+	return mi
+
+
+func toggle_skills_panel() -> void:
+	if skills_panel.visible:
+		skills_panel.hide()
+	else:
+		rebuild_skills_panel()
+		skills_panel.show()
+
+
+func rebuild_skills_panel() -> void:
+	clear_children(skills_box)
+	var parsed: Variant = JSON.parse_string(session.skills_json())
+	if not (parsed is Dictionary):
+		return
+	var data: Dictionary = parsed
+	var head := make_label()
+	head.add_theme_font_size_override("font_size", 17)
+	head.text = "Skills — %d point(s) to spend   (K / Esc to close)" % int(data.get("skillPoints", 0))
+	skills_box.add_child(head)
+	var branch := ""
+	for sk_v in data.get("skills", []):
+		var sk: Dictionary = sk_v
+		if str(sk["branch"]) != branch:
+			branch = str(sk["branch"])
+			var bl := make_label()
+			bl.add_theme_font_size_override("font_size", 15)
+			bl.add_theme_color_override("font_color", Color(1.0, 0.82, 0.45))
+			bl.text = branch.capitalize()
+			skills_box.add_child(bl)
+		var row := HBoxContainer.new()
+		var l := make_label()
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.custom_minimum_size = Vector2(500, 0)
+		var kind := "passive" if str(sk["kind"]) == "passive" else "%d MP · cd %d" % [int(sk["manaCost"]), int(sk["cooldown"])]
+		var desc := str(sk["summary"])
+		if sk.get("next") != null:
+			desc += "\nNext: " + str(sk["next"])
+		l.text = "%s %s  (tier %d, rank %d/3, %s)\n%s" % [str(sk["glyph"]), str(sk["name"]), int(sk["tier"]), int(sk["rank"]), kind, desc]
+		row.add_child(l)
+		var b := make_button("Learn")
+		b.disabled = not bool(sk.get("canLearn", false))
+		if sk.get("reason") != null:
+			b.tooltip_text = str(sk["reason"])
+		var sid := str(sk["id"])
+		b.pressed.connect(func() -> void:
+			if session.learn_skill(sid):
+				refresh()
+				rebuild_skills_panel())
+		row.add_child(b)
+		skills_box.add_child(row)
 

@@ -34,7 +34,7 @@ Port the vertical slice from `/Users/gerth/Projects/elfstoryreborn/src/game/` in
 - [x] Port `overworld`, `highspire`, `thornwick`, `cinderwatch`, `dungeon_2..5`, `barrow_1..2`, `mire_1..2`, `frost_1..3`, and Endless Abyss (`dungeon_6+`) with regional town supplies on `barrow_1` / `mire_1` / `frost_1`.
 - [x] Port all 18 NPCs, comedy-tone dialogue/barks (`garthVoice`), 10 quests, set-piece rooms, 17 enemy archetypes, companions, difficulty tiers, Hardcore, NG+ ascension (preserving `blacksmith` stock), and gamepad navigation.
 - [x] World session behaviors: vault door, Seal Brazier hall, waystone attunement, chests (ordinary / vault / boss hoard / satchel), restorative braziers (Nov 21).
-- [ ] Skills in combat (skill behaviors on top of the ported combat core).
+- [x] Skills in combat (Nov 21): 8 actives + passives + prodigy hooks, aiming/hotbar/learning, and the TS enemy turn (statuses, DoTs, dodge, intents). Not yet: companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste.
 - [ ] Native macOS `.app` export — no export preset exists yet; the game only runs inside Godot.
 - [ ] Remaining procedural boxes in Oakhaven (cottages/stalls) — style follows the Nov 21 textured-source direction in `tools/ASSET_GATE.md`, not flat Track A.
 

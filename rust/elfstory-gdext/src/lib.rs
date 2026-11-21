@@ -184,6 +184,76 @@ impl ElfStorySession {
         }
     }
 
+    // ---- skills / combat (combat_turn.rs) ----
+
+    /// Fire a hotbar slot (0-4): self skills cast at once; targeted skills
+    /// arm/disarm the aim.
+    #[func]
+    fn trigger_hotbar(&mut self, slot: i32) -> GString {
+        match &mut self.inner {
+            Some(s) if slot >= 0 => GString::from(&event_name(s.trigger_hotbar(slot as usize))),
+            _ => GString::from("none"),
+        }
+    }
+
+    #[func]
+    fn confirm_target(&mut self) -> GString {
+        match &mut self.inner {
+            Some(s) => GString::from(&event_name(s.confirm_target())),
+            None => GString::from("none"),
+        }
+    }
+
+    #[func]
+    fn cycle_target(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.cycle_target();
+        }
+    }
+
+    #[func]
+    fn move_aim(&mut self, dx: i32, dy: i32) {
+        if let Some(s) = &mut self.inner {
+            s.move_aim(dx, dy);
+        }
+    }
+
+    #[func]
+    fn cancel_aim(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.cancel_aim();
+        }
+    }
+
+    #[func]
+    fn wait_turn(&mut self) -> GString {
+        match &mut self.inner {
+            Some(s) => GString::from(&event_name(s.wait_turn())),
+            None => GString::from("none"),
+        }
+    }
+
+    /// {skillPoints, skills:[{id,name,glyph,branch,tier,kind,rank,summary,
+    /// current,next,canLearn,reason,manaCost,cooldown}]}
+    #[func]
+    fn skills_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.skills_json().to_string()),
+            None => GString::from("null"),
+        }
+    }
+
+    #[func]
+    fn learn_skill(&mut self, skill_id: GString) -> bool {
+        let Some(id) = elfstory_core::types::SkillId::parse(&skill_id.to_string()) else {
+            return false;
+        };
+        match &mut self.inner {
+            Some(s) => s.learn_skill(id),
+            None => false,
+        }
+    }
+
     /// Presentation cues since the last call, as a JSON array of
     /// {kind, x, y, dx, dy}: hit, crit, kill, player_hit, windup, pickup,
     /// chest, brazier, waystone, unseal, level_up. Draining.
