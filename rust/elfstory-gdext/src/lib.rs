@@ -5,7 +5,7 @@
 
 use elfstory_core::session::{GameSession, SessionEvent};
 use elfstory_core::town::BlacksmithLot;
-use elfstory_core::types::StarterClass;
+use elfstory_core::types::{SaveSlotId, StarterClass};
 use godot::prelude::*;
 
 struct ElfStoryExtension;
@@ -182,6 +182,41 @@ impl ElfStorySession {
         if let Some(s) = &mut self.inner {
             s.close_prompt();
         }
+    }
+
+    // ---- save / continue (session_save.rs), single slot for now ----
+
+    /// Save the current game to slot 1 under `dir` (absolute path).
+    #[func]
+    fn save_game(&mut self, dir: GString) -> bool {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        match &self.inner {
+            Some(s) => s.save_to_dir(&dir.to_string(), SaveSlotId::Slot1, now_ms),
+            None => false,
+        }
+    }
+
+    /// Load slot 1 from `dir`, replacing the current game. Returns "ok" or
+    /// the reason it can't load (the current game is kept on failure).
+    #[func]
+    fn load_game(&mut self, dir: GString) -> GString {
+        match GameSession::load_from_dir(&dir.to_string(), SaveSlotId::Slot1) {
+            Ok(s) => {
+                self.inner = Some(s);
+                GString::from("ok")
+            }
+            Err(e) => GString::from(&e),
+        }
+    }
+
+    /// {status: empty|ok|corrupt|future|dead, message, zone, level, updatedAtMs}
+    #[func]
+    fn save_summary_json(&self, dir: GString) -> GString {
+        let sum = GameSession::summarize_slot(&dir.to_string(), SaveSlotId::Slot1);
+        GString::from(&serde_json::to_string(&sum).unwrap_or_else(|_| "null".into()))
     }
 
     // ---- skills / combat (combat_turn.rs) ----

@@ -33,6 +33,16 @@ impl ItemIdGen {
         Self { counter: 100 }
     }
 
+    /// Counter value, for saves.
+    pub fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    /// Resume from a saved counter.
+    pub fn with_counter(counter: u64) -> Self {
+        Self { counter }
+    }
+
     pub fn next_id(&mut self) -> String {
         self.counter += 1;
         format!("itm_{}", self.counter)

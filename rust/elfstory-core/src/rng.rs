@@ -10,6 +10,12 @@ impl Rng {
         Self { state: seed }
     }
 
+    /// Current internal state (for saves: restoring it continues the
+    /// exact same sequence).
+    pub fn state(&self) -> u32 {
+        self.state
+    }
+
     pub fn next_u32(&mut self) -> u32 {
         self.state = self.state.wrapping_add(0x6D2B_79F5);
         let mut t = self.state;

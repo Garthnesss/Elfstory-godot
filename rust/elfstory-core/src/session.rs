@@ -200,6 +200,23 @@ impl GameSession {
         s
     }
 
+    // Save glue (session_save.rs) for the private bookkeeping fields.
+    pub(crate) fn extra_flags_ref(&self) -> &HashMap<String, Value> {
+        &self.extra_flags
+    }
+    pub(crate) fn delve_counters(&self) -> (i32, i32) {
+        (self.delve_progress, self.kills_this_delve)
+    }
+    pub(crate) fn seq_value(&self) -> u32 {
+        self.seq
+    }
+    pub(crate) fn restore_internals(&mut self, extra: HashMap<String, Value>, delve: i32, kills: i32, seq: u32) {
+        self.extra_flags = extra;
+        self.delve_progress = delve;
+        self.kills_this_delve = kills;
+        self.seq = seq;
+    }
+
     /// Grant XP and run level-ups (TS grantXpAndCheckLevel shape:
     /// xpToNext grows x1.48, +2 attribute points / +1 skill point per
     /// level, full heal on level). Returns LevelUp if a level was gained.

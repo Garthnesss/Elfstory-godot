@@ -241,3 +241,17 @@ and glTF inspection rather than assumed:
 - **Smoke hook:** `Main.gd` honours `-- --elfstory-capture=<png>`: it renders about 2 s of Oakhaven, saves the frame and quits. It does nothing otherwise.
 - **Combat sounds:** Kenney RPG Audio (CC0, downloaded by Garth from kenney.nl). Eight files fill the existing combat cues (slash, crit, kill, hurt, coins, chest latch, vault door, Iron Fortress), and four footsteps play on each successful step at −8 dB. Sound is still not checked by ear.
 - **Verified:** the exported app launches with no errors and renders textured Oakhaven, the HUD and the hotbar (smoke capture reviewed). cargo test 99/99, headless checks green.
+
+## Save & Continue (Nov 21, 2026)
+
+- **`session_save.rs`** turns the live game into the web version's save-bundle shape and back: `player`, `zones` (every visited zone, including looted chests, opened vaults and enemies), `currentZoneId`, `worldFlags`, `quests`, `merchantStocks`, `logs`, `town`, `difficulty` and `ngPlusCycle`. A `rust` block holds the RNG state (a loaded game continues the same seeded sequence), the item-id counter, extra dialogue flags, the delve counters the return-tick guards read, and the tile revision.
+  - Presentation state (aim, open prompt or dialogue, fx cues) is not saved.
+  - Loading goes through save.rs's checks: corrupt, newer-version and fallen-hardcore slots are refused with their messages.
+- **`DirStorage`** (save.rs) keeps one JSON file per slot and writes via temp file + rename, so a crash mid-save keeps the previous save. Saves live in `~/Library/Application Support/Godot/app_userdata/ElfStory Reborn/saves/` (slot 1, about 70 KB per Oakhaven-only game), shared by the editor and the app.
+- **Bridge:** `save_game`, `load_game`, `save_summary_json`.
+- **Godot:**
+  - Autosave on every zone change and death-wake, every 25 actions, and on window close.
+  - At launch, if a save exists, a panel offers **Continue — <zone>, level N** or **New Game**. Unreadable saves show their message and are never silently replaced.
+  - `--elfstory-capture` smoke runs never read or write saves.
+- **Verified:** cargo test 101/101. The new round-trip test walks into the overworld and changes player, flags, town, quests and a tile, then saves, loads and compares everything, RNG continuation included; corrupt and empty slots are also covered. A two-launch editor check (move, learn a skill, autosave, relaunch, see the title, Continue) came back at the same tile with the skill on the hotbar; the test save was deleted afterwards. The rebuilt app passes the smoke test.
+- **Not yet:** multiple slots in the UI (the core supports 3), difficulty choice at New Game, and a proper title screen with art.

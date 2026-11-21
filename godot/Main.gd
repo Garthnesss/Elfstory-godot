@@ -107,7 +107,11 @@ var skills_panel: PanelContainer
 var skills_box: VBoxContainer
 var aim_marker: MeshInstance3D
 var telegraph_root: Node3D
-var prompt_open := false # the dialogue panel is showing a world-tile prompt
+var prompt_open := false
+var title_panel: PanelContainer
+var saving_enabled := true # off in --elfstory-capture smoke runs
+var actions_since_save := 0
+const AUTOSAVE_EVERY := 25 # forwarded actions between autosaves # the dialogue panel is showing a world-tile prompt
 
 
 func _ready() -> void:
@@ -140,7 +144,12 @@ func _ready() -> void:
 
 	session = ElfStorySession.new()
 	session.new_game("Garth", "Vanguard", 20261120)
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--elfstory-capture="):
+			saving_enabled = false # smoke runs never touch the player's save
 	refresh()
+	if saving_enabled:
+		show_title_if_save()
 	_maybe_smoke_capture()
 
 
@@ -186,6 +195,9 @@ func refresh() -> void:
 		current_build_key = build_key
 		rebuild_world()
 	refresh_entities()
+	actions_since_save += 1
+	if actions_since_save >= AUTOSAVE_EVERY:
+		autosave()
 	update_combat_overlays()
 	update_hotbar()
 	if skills_panel.visible:
@@ -196,6 +208,8 @@ func refresh() -> void:
 ## Bridge events are plain strings; panels are the only side effects here —
 ## the snapshot refresh that follows every action shows the consequences.
 func handle_event(ev: String) -> void:
+	if ev.begins_with("zone_changed:") or ev == "player_died":
+		autosave()
 	if ev.begins_with("dialogue:"):
 		open_dialogue(ev.trim_prefix("dialogue:"))
 	elif ev.begins_with("prompt:"):
@@ -651,6 +665,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		var k := event as InputEventKey
 		if not k.pressed or k.echo:
 			return
+		if title_panel != null:
+			return # Continue / New Game first
 		match k.physical_keycode:
 			KEY_V:
 				chase_mode = not chase_mode
@@ -722,7 +738,7 @@ func key_dir(k: int) -> Vector2i:
 ## Held-key walking: poll the same key set every MOVE_REPEAT seconds.
 func update_held_movement(delta: float) -> void:
 	move_timer -= delta
-	if move_timer > 0.0 or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
+	if move_timer > 0.0 or title_panel != null or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
 		return
 	var held := Vector2i.ZERO
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
@@ -1377,4 +1393,94 @@ func rebuild_skills_panel() -> void:
 				rebuild_skills_panel())
 		row.add_child(b)
 		skills_box.add_child(row)
+
+
+# ---------------------------------------------------------------------------
+# Save / continue (single slot; rules + format in session_save.rs)
+# ---------------------------------------------------------------------------
+
+func save_dir() -> String:
+	return OS.get_user_data_dir().path_join("saves")
+
+
+func autosave() -> void:
+	if not saving_enabled or title_panel != null:
+		return # nothing to save before the player picks Continue / New Game
+	actions_since_save = 0
+	if not session.save_game(save_dir()):
+		push_warning("ElfStory: autosave failed (%s)" % save_dir())
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		autosave()
+
+
+## On launch: if slot 1 holds a game, offer Continue / New Game over the
+## fresh town; unreadable saves are explained, never silently replaced.
+func show_title_if_save() -> void:
+	var parsed: Variant = JSON.parse_string(session.save_summary_json(save_dir()))
+	if not (parsed is Dictionary):
+		return
+	var sum: Dictionary = parsed
+	var status := str(sum.get("status", "empty"))
+	if status == "empty":
+		return
+	title_panel = make_panel()
+	title_panel.anchor_left = 0.5
+	title_panel.anchor_right = 0.5
+	title_panel.anchor_top = 0.5
+	title_panel.anchor_bottom = 0.5
+	title_panel.offset_left = -220
+	title_panel.offset_right = 220
+	title_panel.offset_top = -85
+	title_panel.offset_bottom = 70
+	hud_title.get_parent().get_parent().get_parent().add_child(title_panel) # the UI CanvasLayer
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	title_panel.add_child(box)
+	var head := make_label()
+	head.add_theme_font_size_override("font_size", 22)
+	head.text = "ElfStory"
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(head)
+	if status == "ok":
+		var cont := make_button("Continue — %s, level %d" % [str(sum.get("zone", "?")), int(sum.get("level", 1))])
+		cont.pressed.connect(_on_title_continue)
+		box.add_child(cont)
+		var note := make_label()
+		note.text = "New Game replaces this save at the next autosave."
+		note.add_theme_font_size_override("font_size", 12)
+		box.add_child(note)
+	else:
+		var msg := make_label()
+		msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		msg.custom_minimum_size = Vector2(400, 0)
+		msg.text = str(sum.get("message", "This save can't be loaded."))
+		box.add_child(msg)
+	var fresh := make_button("New Game")
+	fresh.pressed.connect(_on_title_new_game)
+	box.add_child(fresh)
+
+
+func _on_title_continue() -> void:
+	var res: String = session.load_game(save_dir())
+	close_title()
+	if res != "ok":
+		push_warning("ElfStory: load failed: " + res)
+	current_zone_id = "" # force a full rebuild for the loaded zone
+	current_build_key = ""
+	refresh()
+
+
+func _on_title_new_game() -> void:
+	close_title()
+	autosave()
+	refresh()
+
+
+func close_title() -> void:
+	if title_panel != null:
+		title_panel.queue_free()
+		title_panel = null
 

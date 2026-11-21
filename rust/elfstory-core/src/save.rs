@@ -460,3 +460,37 @@ mod tests {
         assert_eq!(redead["deadAtMs"], json!(500));
     }
 }
+
+/// File-backed `SlotStorage`: one `<key>.json` per slot in `dir`. Writes go
+/// to a temp file then rename, so a crash mid-save never leaves a torn
+/// slot (the previous save survives).
+#[derive(Debug, Clone)]
+pub struct DirStorage {
+    dir: std::path::PathBuf,
+}
+
+impl DirStorage {
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+    fn path(&self, key: &str) -> std::path::PathBuf {
+        self.dir.join(format!("{key}.json"))
+    }
+}
+
+impl SlotStorage for DirStorage {
+    fn get_item(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(self.path(key)).ok()
+    }
+    fn set_item(&mut self, key: &str, value: String) {
+        let _ = std::fs::create_dir_all(&self.dir);
+        let tmp = self.dir.join(format!("{key}.json.tmp"));
+        if std::fs::write(&tmp, value).is_ok() {
+            let _ = std::fs::rename(&tmp, self.path(key));
+        }
+    }
+    fn remove_item(&mut self, key: &str) {
+        let _ = std::fs::remove_file(self.path(key));
+    }
+}
+

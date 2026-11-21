@@ -10,6 +10,7 @@ pub mod rng;
 pub mod run_rules;
 pub mod save;
 pub mod session;
+pub mod session_save;
 pub mod skills;
 pub mod town;
 pub mod town_layout;
