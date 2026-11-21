@@ -168,3 +168,8 @@ and glTF inspection rather than assumed:
 - Main.gd: build_landmarks now honors the placement light data ported from TS (PlacementLight in the Rust data): an OmniLight3D per lit building, TS x-offset flipped for Godot handedness. Forge lights (0xff8c2b) flicker in update_camera via _flicker_forge; Mira gets her green apothecary glow (0x7ef29a). The built blacksmith (post-quest lot) carries its own light in the data and will light up the same way.
 - Main.tscn: soft bloom on (glow 0.4 / 0.9 / threshold 0.1).
 - Verified in-game (tactical + close-ups): warm pool sits on the forge/door, green glow at Mira front. Lights rebuild cleanly with refresh() (children of landmarks_root).
+
+## Golden hour (Nov 21, 2026, Garths call)
+
+- Base light changed from midday to golden hour (accent lights from 06aee4b stay and read stronger at dusk). Sun: rotation (-26, -45) in Main.gd, color (1, 0.68, 0.42), energy 1.2. Sky: dusky top (0.22, 0.30, 0.52), peach horizon (0.97, 0.66, 0.42), sun_curve 0.06, warm-gray ground colors so the tactical backdrop stays calm. Fog warm peach (0.94, 0.72, 0.55) at 0.0012, sky_affect 0.1; ambient 0.48; saturation 1.22.
+- Tuned over three in-game captures: v1 was an orange-out (saturated sun + fog sky_affect 0.35 flattened the backdrop); v3 keeps terrain readable with long shadows and warm buildings.

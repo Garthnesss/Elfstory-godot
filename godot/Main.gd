@@ -66,7 +66,7 @@ var current_merchant_id := ""
 
 
 func _ready() -> void:
-	sun.rotation_degrees = Vector3(-52.0, -35.0, 0.0) # warm afternoon angle
+	sun.rotation_degrees = Vector3(-26.0, -45.0, 0.0) # golden hour: low western sun
 
 	terrain_root = Node3D.new()
 	terrain_root.name = "Terrain"
