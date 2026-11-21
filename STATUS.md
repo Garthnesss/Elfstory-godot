@@ -255,3 +255,12 @@ and glTF inspection rather than assumed:
   - `--elfstory-capture` smoke runs never read or write saves.
 - **Verified:** cargo test 101/101. The new round-trip test walks into the overworld and changes player, flags, town, quests and a tile, then saves, loads and compares everything, RNG continuation included; corrupt and empty slots are also covered. A two-launch editor check (move, learn a skill, autosave, relaunch, see the title, Continue) came back at the same tile with the skill on the hotbar; the test save was deleted afterwards. The rebuilt app passes the smoke test.
 - **Not yet:** multiple slots in the UI (the core supports 3), difficulty choice at New Game, and a proper title screen with art.
+
+## Meadow grass (Nov 21, 2026)
+
+- **Grass and wildflowers** on every `floor` tile in Oakhaven and the Silverwood Vale (`GRASS_ZONES` in `Main.gd`). Written in-house instead of an Asset Library add-on: `grass.gd` builds one procedural tuft (11 tapered blades) and instances it about 22 times per tile on a MultiMesh, with a sparse second MultiMesh of flower heads (white, buttercup, lavender, coral). `grass.gdshader` ramps root-to-tip colour, sways with wind (rolling gusts + flutter, roots stay planted) and lets the low sun through the tips.
+- Placement is a pure function of tile coordinates (integer hash + fixed-seed noise), so each zone always grows the same meadow and the game's seeded RNG is untouched. Tiles under a model footprint get no grass. Grass casts no shadows.
+- **Ground under the grass** is a darker green (`Grass.GROUND`), and meadow floor boxes close their 3% gap so the tile grid no longer shows there; roads and other tiles keep the grid.
+- **Review:** two rounds of in-game captures at tactical and chase zoom. Garth's round-1 notes (too busy, not lush enough, too yellow, hide the grid) were all addressed; he approved round 2.
+- **Capture hooks** (dev only): `--elfstory-warp=<zone>[,x,y]` (debug builds) and `--elfstory-chase` alongside `--elfstory-capture=<png>`.
+- **Verified:** cargo test 101/101, headless RUN1 check OK, all captures render with no script errors. Frame rate not measured (roughly a quarter-million extra triangles per zone).

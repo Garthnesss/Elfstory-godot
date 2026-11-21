@@ -11,6 +11,9 @@ extends Node3D
 ## `placements_json()` are already tile coords, so they drop straight in.
 
 const WATER_SHADER: Shader = preload("res://water.gdshader")
+const Grass := preload("res://grass.gd")
+## Zones whose "floor" tiles grow meadow grass + wildflowers (grass.gd).
+const GRASS_ZONES := ["oakhaven", "overworld"]
 const MOVE_REPEAT := 0.16 # held-key step interval, seconds
 const LOTS := ["pondside", "market", "west_gate"]
 
@@ -63,7 +66,8 @@ var session: Object # ElfStorySession (GDExtension class)
 var state: Dictionary = {}
 
 var current_zone_id := ""
-var current_build_key := "" # zone id + town JSON; a change rebuilds terrain/landmarks
+var current_build_key := ""
+var grass_zone := false # floor tiles take Grass.GROUND under the meadow # zone id + town JSON; a change rebuilds terrain/landmarks
 
 var terrain_root: Node3D
 var landmarks_root: Node3D
@@ -159,6 +163,18 @@ func _maybe_smoke_capture() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--elfstory-capture="):
 			var path := arg.trim_prefix("--elfstory-capture=")
+			# Dev-only framing for captures: --elfstory-warp=<zone>[,x,y]
+			# (debug builds) and --elfstory-chase for the chase camera.
+			for a in OS.get_cmdline_user_args():
+				if a == "--elfstory-chase":
+					chase_mode = true
+				elif a.begins_with("--elfstory-warp=") and session.has_method("debug_warp"):
+					var parts := a.trim_prefix("--elfstory-warp=").split(",")
+					var wx := int(parts[1]) if parts.size() > 2 else -1
+					var wy := int(parts[2]) if parts.size() > 2 else -1
+					session.debug_warp(parts[0], wx, wy)
+					camera_snapped = false
+					refresh()
 			await get_tree().create_timer(2.0).timeout
 			await RenderingServer.frame_post_draw
 			var err := get_viewport().get_texture().get_image().save_png(path)
@@ -285,6 +301,7 @@ func rebuild_world() -> void:
 	for u in zone.get("usedTiles", []):
 		used["%d,%d" % [int(u[0]), int(u[1])]] = true
 
+	grass_zone = GRASS_ZONES.has(str(zone["id"]))
 	var flat_items: Array = []
 	var tall_items: Array = []
 	for y in tiles.size():
@@ -307,6 +324,10 @@ func rebuild_world() -> void:
 		terrain_root.add_child(tall_mm)
 
 	build_water(tiles, is_town, covered)
+	if grass_zone:
+		var grass := Grass.build(tiles, covered)
+		if grass != null:
+			terrain_root.add_child(grass)
 	# Placements are the Oakhaven town-lot models; anywhere else they'd
 	# draw the town's buildings at their Oakhaven tile coordinates.
 	if str(zone["id"]) == "oakhaven":
@@ -343,7 +364,10 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 			var fb := flat_box(kind)
 			h = fb.x
 			bottom = fb.y
-		var basis := Basis.from_scale(Vector3(0.97, h, 0.97))
+		# Small gaps between boxes draw the tile grid; meadow floor closes
+		# them so the grass reads as one field (Garth, Nov 21).
+		var gap := 1.0 if (grass_zone and kind == "floor") else 0.97
+		var basis := Basis.from_scale(Vector3(gap, h, gap))
 		var origin := Vector3(float(it["x"]), bottom + h * 0.5, float(it["y"]))
 		mm.set_instance_transform(i, Transform3D(basis, origin))
 		var c := tile_color(kind, is_town)
@@ -375,6 +399,8 @@ func flat_box(kind: String) -> Vector2:
 func tile_color(kind: String, is_town: bool) -> Color:
 	match kind:
 		"floor":
+			if grass_zone:
+				return Grass.GROUND
 			return Color(0.33, 0.58, 0.27) if is_town else Color(0.34, 0.58, 0.28)
 		"road":
 			return Color(0.62, 0.48, 0.31)

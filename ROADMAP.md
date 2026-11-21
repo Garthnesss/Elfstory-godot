@@ -47,7 +47,7 @@ Full survey and reasoning: `docs/godot-asset-library-shortlist.md`. Every visual
 
 ## Next queue (Garth, Nov 21, 2026 — start next session)
 Garth picked all four; take them in this order unless he says otherwise:
-1. [ ] **Grass & foliage** — scatter stylized grass over Oakhaven + Silverwood Vale meadow tiles (Simple Grass Textured or Open Stylized 3D grass, see `docs/godot-asset-library-shortlist.md`). Visual: asset gate + Garth's approval before commit; in-game captures at tactical and chase zoom.
+1. [x] **Grass & foliage** — done Nov 21: in-house meadow grass + wildflowers (`godot/grass.gd`, `grass.gdshader`) over Oakhaven + Silverwood Vale floor tiles; no add-on needed. Approved by Garth after two review rounds.
 2. [ ] **Platypus feet** — side-by-side of shipped `oakhaven_platypus.glb` vs raw TRELLIS source (`~/GLocalLM/workspace/3d/`) at close zoom; fix-or-accept is Garth's call.
 3. [ ] **Title & save slots** — real title screen, 3 save slots (core already supports them), difficulty choice (Story / Standard / Hardened) at New Game, app icon.
 4. [ ] **Town loop feel** — ActRaiser growth visible in Oakhaven (houses/fields appearing per Population Tier) and the rebuilt-Blacksmith moment on its chosen lot.
