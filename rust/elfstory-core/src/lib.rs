@@ -14,3 +14,4 @@ pub mod town;
 pub mod town_layout;
 pub mod types;
 pub mod world;
+pub mod world_interact;

@@ -50,6 +50,17 @@ func _initialize() -> void:
 		return
 	session.close_dialogue()
 
+	# World-tile prompt bridge smoke: nothing is open in Oakhaven at start.
+	if str(session.prompt_json()) != "null":
+		push_error("RUN1_CHECK_FAIL: prompt_json() should be 'null' with no open prompt")
+		quit(1)
+		return
+	if str(session.choose_prompt("open_vault")) != "none":
+		push_error("RUN1_CHECK_FAIL: choose_prompt with no prompt should return 'none'")
+		quit(1)
+		return
+	session.close_prompt()
+
 	var after: Variant = JSON.parse_string(session.state_json())
 	var p: Dictionary = after["player"]
 	print("RUN1_CHECK_OK player=(%d,%d) zone=%s" % [int(p["x"]), int(p["y"]), str(after["zone"]["id"])])

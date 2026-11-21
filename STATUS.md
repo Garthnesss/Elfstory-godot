@@ -173,3 +173,21 @@ and glTF inspection rather than assumed:
 
 - Base light changed from midday to golden hour (accent lights from 06aee4b stay and read stronger at dusk). Sun: rotation (-26, -45) in Main.gd, color (1, 0.68, 0.42), energy 1.2. Sky: dusky top (0.22, 0.30, 0.52), peach horizon (0.97, 0.66, 0.42), sun_curve 0.06, warm-gray ground colors so the tactical backdrop stays calm. Fog warm peach (0.94, 0.72, 0.55) at 0.0012, sky_affect 0.1; ambient 0.48; saturation 1.22.
 - Tuned over three in-game captures: v1 was an orange-out (saturated sun + fog sky_affect 0.35 flattened the backdrop); v3 keeps terrain readable with long shadows and warm buildings.
+
+## World session behaviors (Nov 21, 2026)
+
+- New `world_interact.rs` ports the App.tsx `interactWithTile` branches for the M3 world tiles:
+  - **Vault door:** bumping it opens a prompt. "Break the Seal" turns it into an open door and alerts every enemy within 8 tiles.
+  - **Seal Brazier hall:** the seal door's prompt reports lit/total. Each brazier heals fully, and lighting the last one opens the door ("Unsealed Reliquary Door").
+  - **Waystones:** stepping on one opens a prompt. Attune restores 35% HP/MP and gives Shielded +4 DEF for 4 turns. The Starlight Surge option is gated on Arcana or Resolve 3; it clears cooldowns, fills mana and gives +15 gold. Either way it increments `waystonesAttuned`, adds `lore_waystone`, and moves Outrider Oath to stage 2/3.
+  - **Chests:** ordinary, vault reliquary (min Epic), side-dungeon boss hoard (90 + depth×22 + 10 gold plus a random set relic), and the overworld satchel (advances Silverwood Road).
+  - **Braziers:** restorative braziers, including the hunter camp.
+  - Every TS `Math.random()` in these branches now draws from the session RNG.
+- **Session:** chests, braziers and waystones trigger when stepped on, with no enemy turn when handled, as in TS. The interact key checks the tile underfoot and then the 8 around it. Moves and interacts are ignored while a prompt is open. Consumables stack on pickup (TS `addItemToPlayer`).
+- **Bridge:** `prompt_json`, `choose_prompt` and `close_prompt`, plus a `prompt:<kind>` event. `debug_warp(zone, x, y)` exists in debug builds only, for captures.
+- **Godot:** prompts render in the dialogue panel, with disabled options shown disabled. A `tileRev` counter in the snapshot rebuilds the terrain when a tile changes in place. Used chests, braziers and waystones render darkened. Vault doors stand wall-height until opened.
+- **Bug fixed:** since `06aee4b`, leaving Oakhaven left freed forge lights in `forge_lights`, so `_flicker_forge` threw a script error every frame in every other zone.
+- **TS quirk kept verbatim:** the surge option's label says "+8 Dust", but its effect and log line give +15 gold.
+- **Verified:** cargo test 83/83 (6 new tests). The gdext debug build and release check are clean. Headless RUN1_CHECK_OK now includes a prompt bridge smoke test. Main.tscn runs 90 frames with no errors. In-game captures on Floor 2 show the vault prompt, the unsealed door with guardians closing in, and a chase-camera close-up. The capture script was deleted.
+- **Not yet checked in-game:** seal hall, waystone, and chest darkening (each is test-covered in Rust only).
+

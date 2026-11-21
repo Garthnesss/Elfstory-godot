@@ -43,6 +43,9 @@ pub enum SessionEvent {
     ZoneChanged(ZoneId),
     PlayerDied,
     LevelUp(i32),
+    /// A world-tile prompt opened (vault / seal_door / waystone); read it
+    /// with `prompt_json`.
+    OpenPrompt(String),
 }
 
 pub struct GameSession {
@@ -60,6 +63,11 @@ pub struct GameSession {
     pub quests: HashMap<String, QuestProgress>,
     /// Active dialogue (npc id, node id) while a conversation is open.
     pub active_dialogue: Option<(String, String)>,
+    /// Open world-tile prompt (TS `specialPrompt`), see world_interact.rs.
+    pub active_prompt: Option<crate::world_interact::SpecialPrompt>,
+    /// Bumped whenever a tile in a zone changes (doors unsealed, chests
+    /// looted...) so the front-end knows to rebuild terrain.
+    pub tile_rev: u32,
     /// Dialogue set_flag values for keys outside the typed WorldFlags.
     extra_flags: HashMap<String, Value>,
     pub log: Vec<String>,
@@ -157,6 +165,8 @@ impl GameSession {
             merchant_stocks: HashMap::new(),
             quests: HashMap::new(),
             active_dialogue: None,
+            active_prompt: None,
+            tile_rev: 0,
             extra_flags: HashMap::new(),
             log: vec![],
             delve_progress: 0,
@@ -189,7 +199,7 @@ impl GameSession {
         event
     }
 
-    fn say(&mut self, text: &str) {
+    pub(crate) fn say(&mut self, text: &str) {
         self.log.push(text.to_string());
         if self.log.len() > 200 {
             self.log.drain(0..100);
@@ -220,7 +230,7 @@ impl GameSession {
 
     /// One player step (or bump attack). Returns what the UI should react to.
     pub fn move_player(&mut self, dx: i32, dy: i32) -> SessionEvent {
-        if self.player.hp <= 0 {
+        if self.player.hp <= 0 || self.active_prompt.is_some() {
             return SessionEvent::None;
         }
         let nx = self.player.x + dx;
@@ -241,6 +251,12 @@ impl GameSession {
             Some(t) => t,
             None => return SessionEvent::None,
         };
+        // TS: vault doors prompt on bump, before the walkability check.
+        if tile.kind == TileKind::VaultDoor {
+            return self
+                .interact_with_world_tile(nx, ny)
+                .unwrap_or(SessionEvent::None);
+        }
         if !tile.walkable {
             return SessionEvent::None;
         }
@@ -283,6 +299,14 @@ impl GameSession {
             TileKind::StairsDown => return self.transition_down(),
             TileKind::StairsUp => return self.transition_up(),
             TileKind::GateCity => return self.transition_gate(),
+            // TS auto-triggers these when stepped onto. A handled chest or
+            // brazier, and any unattuned waystone, ends the step without an
+            // enemy turn; an already-used one is just floor.
+            TileKind::Chest | TileKind::Brazier | TileKind::Waystone => {
+                if let Some(ev) = self.interact_with_world_tile(px, py) {
+                    return ev;
+                }
+            }
             _ => {}
         }
         self.enemy_turn();
@@ -530,6 +554,16 @@ impl GameSession {
         }
     }
 
+    /// Dev/capture helper (debug bridge builds only): enter `id`
+    /// (generating it if needed) and stand at (x, y); x < 0 keeps the
+    /// zone's normal entry tile. No banking, ticks or turn passes.
+    pub fn debug_warp(&mut self, id: ZoneId, x: i32, y: i32) -> SessionEvent {
+        self.active_prompt = None;
+        self.active_dialogue = None;
+        let entry = if x >= 0 { Some(Pos::new(x, y)) } else { None };
+        self.enter_zone_at(id, entry, true)
+    }
+
     fn enter_zone(&mut self, id: ZoneId, down: bool) -> SessionEvent {
         self.enter_zone_at(id, None, down)
     }
@@ -632,8 +666,13 @@ impl GameSession {
         SessionEvent::PlayerDied
     }
 
-    /// Interact with an adjacent NPC or the rebuilt Blacksmith lot.
+    /// Interact with an adjacent NPC, the rebuilt Blacksmith lot, or a
+    /// world tile underfoot / adjacent (vault, seal door, chest, brazier,
+    /// waystone — world_interact.rs).
     pub fn interact(&mut self) -> SessionEvent {
+        if self.active_prompt.is_some() {
+            return SessionEvent::None;
+        }
         let (px, py) = (self.player.x, self.player.y);
         let npc = self
             .zone()
@@ -657,6 +696,20 @@ impl GameSession {
             && crate::town_layout::is_near_blacksmith_lot(px, py, Some(&self.town))
         {
             return SessionEvent::OpenMerchant("blacksmith".into());
+        }
+        // TS handleInteractAction: the tile underfoot, then the 8 around.
+        if let Some(ev) = self.interact_with_world_tile(px, py) {
+            return ev;
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                if let Some(ev) = self.interact_with_world_tile(px + dx, py + dy) {
+                    return ev;
+                }
+            }
         }
         SessionEvent::None
     }
@@ -1212,6 +1265,8 @@ impl GameSession {
                 "width": zone.width,
                 "height": zone.height,
                 "tiles": tiles,
+                "tileRev": self.tile_rev,
+                "usedTiles": self.used_tiles(),
                 "enemies": zone.enemies.iter().filter(|e| e.hp > 0).map(|e| json!({
                     "id": e.id, "name": e.name, "glyph": e.glyph, "x": e.x, "y": e.y,
                     "hp": e.hp, "maxHp": e.max_hp, "isBoss": e.is_boss.unwrap_or(false),
@@ -1231,6 +1286,7 @@ impl GameSession {
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "carriedTownTags": self.carried_town_tags(),
+            "prompt": self.active_prompt.as_ref().map(|p| p.kind.as_str()),
             "log": self.log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
         })
     }
@@ -1301,6 +1357,9 @@ mod tests {
             match next_step_through_foes(s, tx, ty) {
                 Some((nx, ny)) => {
                     s.move_player(nx - px, ny - py);
+                    // Walking over a waystone (or bumping a vault door)
+                    // opens a prompt; this walker always steps away.
+                    s.close_prompt();
                 }
                 None => return false,
             }

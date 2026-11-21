@@ -38,6 +38,7 @@ fn event_name(ev: SessionEvent) -> String {
         SessionEvent::ZoneChanged(z) => format!("zone_changed:{}", z.to_string_id()),
         SessionEvent::PlayerDied => "player_died".into(),
         SessionEvent::LevelUp(l) => format!("level_up:{l}"),
+        SessionEvent::OpenPrompt(kind) => format!("prompt:{kind}"),
     }
 }
 
@@ -154,6 +155,46 @@ impl ElfStorySession {
     fn close_dialogue(&mut self) {
         if let Some(s) = &mut self.inner {
             s.close_dialogue();
+        }
+    }
+
+    /// Open world-tile prompt (vault door, seal door, waystone) as JSON:
+    /// {kind, x, y, title, subtitle, body, options:[{id,label,tone,disabled}]},
+    /// or "null" when none is open.
+    #[func]
+    fn prompt_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.prompt_json().to_string()),
+            None => GString::from("null"),
+        }
+    }
+
+    #[func]
+    fn choose_prompt(&mut self, option_id: GString) -> GString {
+        match &mut self.inner {
+            Some(s) => GString::from(&event_name(s.choose_prompt(&option_id.to_string()))),
+            None => GString::from("none"),
+        }
+    }
+
+    #[func]
+    fn close_prompt(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.close_prompt();
+        }
+    }
+
+    /// Dev/capture only (debug builds): warp to a zone id ("dungeon_3",
+    /// "overworld", ...) at (x, y); x < 0 uses the zone's entry tile.
+    #[cfg(debug_assertions)]
+    #[func]
+    fn debug_warp(&mut self, zone_id: GString, x: i32, y: i32) -> GString {
+        let Some(id) = elfstory_core::types::ZoneId::parse(&zone_id.to_string()) else {
+            return GString::from("none");
+        };
+        match &mut self.inner {
+            Some(s) => GString::from(&event_name(s.debug_warp(id, x, y))),
+            None => GString::from("none"),
         }
     }
 

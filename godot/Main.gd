@@ -22,6 +22,7 @@ const TALL_HEIGHTS := {
 	"gate_city": 2.8,
 	"market_stall": 1.7,
 	"torch": 1.8,
+	"vault_door": 2.6, # sealed doors stand in the wall line until opened
 }
 
 var session: Object # ElfStorySession (GDExtension class)
@@ -63,6 +64,7 @@ var merchant_panel: PanelContainer
 var merchant_title: Label
 var merchant_rows: VBoxContainer
 var current_merchant_id := ""
+var prompt_open := false # the dialogue panel is showing a world-tile prompt
 
 
 func _ready() -> void:
@@ -105,7 +107,9 @@ func refresh() -> void:
 
 	var zone: Dictionary = state["zone"]
 	var zid := str(zone["id"])
-	var build_key := zid + "|" + JSON.stringify(state.get("town", {}))
+	# tileRev bumps when a tile changes in place (vault unsealed, chest
+	# looted, waystone attuned), so terrain rebuilds for those too.
+	var build_key := "%s|%s|%s" % [zid, JSON.stringify(state.get("town", {})), str(zone.get("tileRev", 0))]
 	if zid != current_zone_id or build_key != current_build_key:
 		current_zone_id = zid
 		current_build_key = build_key
@@ -118,6 +122,8 @@ func refresh() -> void:
 func handle_event(ev: String) -> void:
 	if ev.begins_with("dialogue:"):
 		open_dialogue(ev.trim_prefix("dialogue:"))
+	elif ev.begins_with("prompt:"):
+		render_prompt()
 	elif ev.begins_with("merchant:"):
 		open_merchant(ev.trim_prefix("merchant:"))
 	# "zone_changed:<id>"  -> refresh() rebuilds on the zone-id change.
@@ -161,6 +167,7 @@ func screen_dir_to_world(sd: Vector2i) -> Vector2i:
 func rebuild_world() -> void:
 	clear_children(terrain_root)
 	clear_children(landmarks_root)
+	forge_lights.clear() # the lights were children of landmarks_root (freed above)
 
 	var zone: Dictionary = state["zone"]
 	var tiles: Array = zone["tiles"]
@@ -179,6 +186,10 @@ func rebuild_world() -> void:
 					for tz in range(int(f["minZ"]), int(f["maxZ"]) + 1):
 						covered["%d,%d" % [tx, tz]] = true
 
+	var used := {}
+	for u in zone.get("usedTiles", []):
+		used["%d,%d" % [int(u[0]), int(u[1])]] = true
+
 	var flat_items: Array = []
 	var tall_items: Array = []
 	for y in tiles.size():
@@ -187,7 +198,7 @@ func rebuild_world() -> void:
 			if covered.has("%d,%d" % [x, y]):
 				continue
 			var kind := str(row[x])
-			var item := {"x": x, "y": y, "kind": kind}
+			var item := {"x": x, "y": y, "kind": kind, "used": used.has("%d,%d" % [x, y])}
 			if TALL_HEIGHTS.has(kind):
 				tall_items.append(item)
 			else:
@@ -240,7 +251,10 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 		var basis := Basis.from_scale(Vector3(0.97, h, 0.97))
 		var origin := Vector3(float(it["x"]), bottom + h * 0.5, float(it["y"]))
 		mm.set_instance_transform(i, Transform3D(basis, origin))
-		mm.set_instance_color(i, tile_color(kind, is_town))
+		var c := tile_color(kind, is_town)
+		if bool(it.get("used", false)):
+			c = c.darkened(0.45) # looted chest / spent brazier / attuned waystone
+		mm.set_instance_color(i, c)
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	var mat := StandardMaterial3D.new()
@@ -291,6 +305,10 @@ func tile_color(kind: String, is_town: bool) -> Color:
 			return Color(0.50, 0.42, 0.62)
 		"shrine", "brazier":
 			return Color(0.70, 0.62, 0.40)
+		"vault_door":
+			return Color(0.62, 0.46, 0.18)
+		"waystone":
+			return Color(0.30, 0.66, 0.85)
 		_:
 			return Color(0.50, 0.50, 0.50)
 
@@ -886,8 +904,41 @@ func _on_dialogue_choice(choice_id: String) -> void:
 
 func _on_dialogue_close() -> void:
 	session.close_dialogue()
+	session.close_prompt()
+	prompt_open = false
 	dialogue_panel.hide()
 	refresh()
+
+
+## World-tile prompt (vault door / seal door / waystone) from the core,
+## shown in the dialogue panel: title, subtitle, body, one button per option
+## (disabled options render disabled; the core also refuses them).
+func render_prompt() -> void:
+	var parsed: Variant = JSON.parse_string(session.prompt_json())
+	if not (parsed is Dictionary):
+		prompt_open = false
+		dialogue_panel.hide()
+		return
+	var p: Dictionary = parsed
+	prompt_open = true
+	dialogue_label.text = "%s — %s\n%s" % [str(p.get("title", "")), str(p.get("subtitle", "")), str(p.get("body", ""))]
+	clear_children(dialogue_choices)
+	for o in p.get("options", []):
+		var opt: Dictionary = o
+		var b := make_button(str(opt.get("label", "...")))
+		b.disabled = bool(opt.get("disabled", false))
+		b.pressed.connect(_on_prompt_choice.bind(str(opt.get("id", ""))))
+		dialogue_choices.add_child(b)
+	dialogue_panel.show()
+
+
+func _on_prompt_choice(option_id: String) -> void:
+	var ev: String = session.choose_prompt(option_id)
+	refresh()
+	handle_event(ev)
+	if str(JSON.parse_string(session.prompt_json())) == "<null>":
+		prompt_open = false
+		dialogue_panel.hide()
 
 
 func open_merchant(merchant_id: String) -> void:
