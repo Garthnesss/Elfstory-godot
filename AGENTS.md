@@ -28,6 +28,8 @@ Muse Code, Claude Code, Codex, and Antigravity read this file as project rules w
 
 ## V2 Studio-Grade Hybrid 3D Game Asset Workflow (`oakhaven-asset-pipeline`)
 
+> **Current reference (Nov 21, 2026): `docs/asset-generation-pipeline.md`.** It adds the BiRefNet cutout step (`~/asset-tools/venv/bin/rembg`), the DreamShaper XL Turbo concept checkpoint, the UV-preserving decimation route, and the UniRig status (parked). Where it and the older text below disagree, it wins. ElfStory's buildings ship as textured TRELLIS originals at ~25% decimation (Garth, Nov 21), not the flat Track A kit.
+
 Before creating or modifying any 3D building, prop, landmark, texture, creature, or character, read `.agents/skills/oakhaven-asset-pipeline/SKILL.md`:
 
 1. **Track A — Architecture & Hard-Surface Props** *(No TRELLIS.2)*: `tools/comfy_runner.py --mode pbr-texture` (1024px seamless PBR) + `tools/blender_arch_kit.py` (`1,500–4,000` clean quads, `< 500 KB` `.glb`, bottom-center `Z = 0`, beveled edges + weighted normals) → export into `godot/assets/models/`.

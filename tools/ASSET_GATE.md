@@ -1,5 +1,7 @@
 # Asset Gate — read before adding or re-baking any model
 
+How assets are generated (concept → BiRefNet cutout → TRELLIS.2 → game-ready) is in `docs/asset-generation-pipeline.md`; this file is the shipping gate.
+
 Every `.glb` shipped in `godot/assets/models/` must pass two checks.
 Both exist because of real failures (Nov 20, 2026): the original
 Oakhaven oak was a torn TRELLIS shell — 202 boundary edges, 22
