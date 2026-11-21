@@ -27,22 +27,38 @@ edges back open, so trim size with the voxel size, never decimate.
 Decimate/collapse is also what created the original oak's origami
 shards via the old V1 polish script — see the Nov 19 audit.
 
-## 2. Eyeball render (visual gate)
+## 2. Visual gate — source comparison + adversarial review
 
-```
-Blender --background --python tools/render_preview.py -- in.glb out.png
-```
+Topology numbers are the floor, not the verdict. A model ships only
+after this process (set by Garth, Nov 20, 2026, after a watertight
+but visually ruined oak rebuild was committed on self-grading):
 
-Look at the render. Check: solid surfaces where solid is expected
-(no see-through roofs, no floating scraps), a ground connection
-(trees have trunks), colors that read at a glance. Then confirm
-in-game with a real screenshot — a model can pass both checks and
-still be placed wrong.
+1. **Source first.** Locate the raw generator output (foundry:
+   `~/GLocalLM/workspace/3d/`) and render it with
+   `tools/render_preview.py`. Never repair or judge a derivative
+   without the source render in hand.
+2. **Side-by-side.** Render the candidate with the same tool (same
+   framing) and compare against the source: silhouette, proportions,
+   ground connection (trees have trunks), surface detail, color.
+   A flaw you can describe is a fail, not a style note — "reads fine
+   at game distance" requires the in-game screenshot, not a sentence.
+3. **Adversarial review.** An independent reviewer (subagent that did
+   not build the asset) gets both renders plus the gate numbers and
+   is briefed to find differences and defects, not to approve.
+4. **Garth sees the pack before commit:** side-by-side renders, the
+   reviewer's findings, and the numbers (tris, file size, watertight
+   counts). Nothing commits on the builder's say-so.
+
+"Verified" is banned for visuals unless this process ran — say
+"checks passed" when only checks ran.
 
 ## Budgets (V2 pipeline)
 
 - Track A architecture: < 500 KB per `.glb`
-- Track B organic: < 600 KB per `.glb` (the oak is 784 KB — accepted
-  exception, Nov 20: its canopy needed a finer voxel pass to hold
-  together; it is one shared file for 5 placements)
+- Track B organic: < 600 KB per `.glb`
 - Textures: 1024×1024 albedo + normal, WebP in the `.glb`
+- Foliage exception class: raw TRELLIS foliage is intersecting thin
+  shells and cannot be both strictly watertight and faithful to the
+  source — voxel/retopo wraps destroy the leaf detail (proven twice,
+  Nov 20). For foliage, the visual gate above decides; state the
+  watertight counts and the trade-off in the pack for Garth's call.

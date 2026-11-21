@@ -130,3 +130,23 @@ and glTF inspection rather than assumed:
   `tools/render_preview.py` (isolated eyeball render), with the rules
   written up in `tools/ASSET_GATE.md`. All 4 shipped models pass the
   gate; verified in-game with a rendered screenshot.
+
+
+## 2026-11-21 — Oak replaced under the new asset gate
+
+- The voxel-remeshed oak from the watertight pass was rejected on
+  sight by Garth (canopy detail destroyed vs the raw TRELLIS
+  source). It shipped in dc01038 and is now replaced.
+- Process that produced this fix is the new standard, codified in
+  tools/ASSET_GATE.md: render the raw source first, adversarial
+  subagent review at close zoom, side-by-side pack to Garth,
+  install only on his pick.
+- Candidates reviewed at chase-camera zoom: raw 194,770 tris
+  (full fidelity), 50% 97,385 (minor loss), 25% 48,692 (minor
+  loss), 12% 23,371 (major loss: shards, black speckle).
+- Garth picked the 25% cut: 48,692 tris, 2.9 MB, one shared file
+  across 5 Oakhaven placements (~243k tris of oak town-wide vs
+  ~975k raw). Foliage exception invoked per ASSET_GATE.md: the
+  decimated TRELLIS canopy is not strictly watertight (shell
+  intersections, invisible in renders) - accepted knowingly.
+- Verified in-game with a rendered screenshot before commit.
