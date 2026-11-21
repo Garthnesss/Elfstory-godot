@@ -162,3 +162,9 @@ and glTF inspection rather than assumed:
   Verified in-game with a rendered screenshot before commit.
 - Direction recorded in tools/ASSET_GATE.md: hero buildings follow
   the textured source-first path now.
+
+## Accent lighting (Nov 21, 2026)
+
+- Main.gd: build_landmarks now honors the placement light data ported from TS (PlacementLight in the Rust data): an OmniLight3D per lit building, TS x-offset flipped for Godot handedness. Forge lights (0xff8c2b) flicker in update_camera via _flicker_forge; Mira gets her green apothecary glow (0x7ef29a). The built blacksmith (post-quest lot) carries its own light in the data and will light up the same way.
+- Main.tscn: soft bloom on (glow 0.4 / 0.9 / threshold 0.1).
+- Verified in-game (tactical + close-ups): warm pool sits on the forge/door, green glow at Mira front. Lights rebuild cleanly with refresh() (children of landmarks_root).

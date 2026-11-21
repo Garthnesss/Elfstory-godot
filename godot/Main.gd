@@ -32,6 +32,8 @@ var current_build_key := "" # zone id + town JSON; a change rebuilds terrain/lan
 
 var terrain_root: Node3D
 var landmarks_root: Node3D
+var forge_lights: Array = []
+var _flicker_t := 0.0
 var entities_root: Node3D
 
 var player_node: Node3D
@@ -332,6 +334,7 @@ func build_water(tiles: Array, is_town: bool, covered: Dictionary) -> void:
 ## targetWidthTiles; fall back to a labelled placeholder box when the model
 ## file is not in the project.
 func build_landmarks(placements: Array) -> void:
+	forge_lights.clear()
 	for p in placements:
 		var fname := str(p.get("url", "")).get_file()
 		var target := float(p.get("targetWidthTiles", 3.0))
@@ -354,6 +357,25 @@ func build_landmarks(placements: Array) -> void:
 		if p.has("rotationY"):
 			node.rotation.y = float(p["rotationY"])
 		landmarks_root.add_child(node)
+		if p.get("light") != null:
+			var ld: Dictionary = p["light"]
+			var omni := OmniLight3D.new()
+			var col := int(ld.get("color", 0xffffff))
+			omni.light_color = Color(
+				float((col >> 16) & 0xff) / 255.0,
+				float((col >> 8) & 0xff) / 255.0,
+				float(col & 0xff) / 255.0)
+			omni.light_energy = float(ld.get("intensity", 2.0))
+			omni.set_meta("base_energy", omni.light_energy)
+			omni.omni_range = float(ld.get("distance", 6.0))
+			omni.omni_attenuation = 1.2
+			var off: Array = ld.get("offset", [0.0, 1.0, 0.0])
+			# TS authored offsets in three.js handedness; Godot x runs the other way.
+			var local := Vector3(-float(off[0]), float(off[1]), float(off[2]))
+			omni.position = node.position + local.rotated(Vector3.UP, node.rotation.y)
+			landmarks_root.add_child(omni)
+			if col == 0xff8c2b:
+				forge_lights.append(omni)
 
 
 func make_placeholder(label_text: String, target: float) -> Node3D:
@@ -509,6 +531,7 @@ func _process(delta: float) -> void:
 
 
 func update_camera(delta: float) -> void:
+	_flicker_forge(delta)
 	if player_node == null:
 		return
 	var target := player_node.position # entities_root sits at the origin
@@ -917,3 +940,15 @@ func clear_children(node: Node) -> void:
 	for child in node.get_children():
 		node.remove_child(child)
 		child.free()
+
+
+func _flicker_forge(delta: float) -> void:
+	if forge_lights.is_empty():
+		return
+	_flicker_t += delta
+	for i in forge_lights.size():
+		var l: OmniLight3D = forge_lights[i]
+		if is_instance_valid(l):
+			var base := float(l.get_meta("base_energy", 3.0))
+			var n := sin(_flicker_t * 11.0 + float(i) * 1.7) * 0.6 + sin(_flicker_t * 23.7 + float(i) * 3.1) * 0.4
+			l.light_energy = base * (0.9 + 0.1 * n)
