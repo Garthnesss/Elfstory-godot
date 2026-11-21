@@ -191,3 +191,14 @@ and glTF inspection rather than assumed:
 - **Verified:** cargo test 83/83 (6 new tests). The gdext debug build and release check are clean. Headless RUN1_CHECK_OK now includes a prompt bridge smoke test. Main.tscn runs 90 frames with no errors. In-game captures on Floor 2 show the vault prompt, the unsealed door with guardians closing in, and a chase-camera close-up. The capture script was deleted.
 - **Not yet checked in-game:** seal hall, waystone, and chest darkening (each is test-covered in Rust only).
 
+
+## Combat feel pass — approved by Garth (Nov 21, 2026)
+
+- **Core:** a presentation cue feed. `GameSession::take_fx()` drains `{kind, x, y, dx, dy}` events: hit, crit, kill, player_hit, windup, pickup, chest, brazier, waystone, unseal, level_up. They aren't game state and are never saved; the feed is capped at 64. Bridge: `take_fx_json()`. cargo test 84/84.
+- **Godot:** `refresh()` drains the feed and plays effects from `addons/reeboo_vfx` (REEBOO Stylized VFX Free Sample, MIT, reviewed: particles and lights only):
+  - slash from the attacker's tile toward the target, scaled 0.55 to fit the 1-unit tiles (the scene is authored at character scale)
+  - hit spark on the target (1.5× on a crit, 1.8× on a kill, 0.7× when the player is hit)
+  - pickup sparkle on loot, chests, braziers, waystones and level-ups; it loops by design, so it's stopped after 0.8 s and frees itself (verified: 0 nodes left)
+- **Sound:** an `SFX` table plays the first available file for each cue, plus a click on every UI button. In the project now: 8 Kenney Interface Sounds (CC0) in `assets/audio/ui`. The Asset Library's Kenney RPG Audio port was deleted from GitHub (404), so combat hit sounds point at `assets/audio/rpg/*.ogg` and stay silent until that pack is added from kenney.nl.
+- **Kenney Particle Pack** (CC0) is downloaded but not in the project; it's held for the brazier, forge and waystone pass.
+- **Verified:** headless checks green. In-game captures on Floor 2: the chase camera shows the slash and impact rings, and the tactical view shows the chest sparkle as a warm glow, subtle at that zoom. Sound is untested by ear.

@@ -48,6 +48,20 @@ pub enum SessionEvent {
     OpenPrompt(String),
 }
 
+/// Presentation cue for the front-end (VFX / sound): what just happened,
+/// where. Not game state, never saved; drained by `take_fx` after each
+/// action. `dx`/`dy` is a direction where it matters (attack swing).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FxEvent {
+    pub kind: &'static str,
+    pub x: i32,
+    pub y: i32,
+    pub dx: i32,
+    pub dy: i32,
+}
+
+const FX_CAP: usize = 64;
+
 pub struct GameSession {
     pub player: PlayerState,
     pub town: TownState,
@@ -68,6 +82,8 @@ pub struct GameSession {
     /// Bumped whenever a tile in a zone changes (doors unsealed, chests
     /// looted...) so the front-end knows to rebuild terrain.
     pub tile_rev: u32,
+    /// Presentation cues since the last `take_fx` (capped at FX_CAP).
+    pub fx: Vec<FxEvent>,
     /// Dialogue set_flag values for keys outside the typed WorldFlags.
     extra_flags: HashMap<String, Value>,
     pub log: Vec<String>,
@@ -167,6 +183,7 @@ impl GameSession {
             active_dialogue: None,
             active_prompt: None,
             tile_rev: 0,
+            fx: vec![],
             extra_flags: HashMap::new(),
             log: vec![],
             delve_progress: 0,
@@ -194,9 +211,27 @@ impl GameSession {
             self.player.hp = d.max_hp;
             self.player.max_mana = d.max_mana;
             self.say(&format!("Level up! You are now level {}.", self.player.level));
+            let (px, py) = (self.player.x, self.player.y);
+            self.fx("level_up", px, py);
             event = SessionEvent::LevelUp(self.player.level);
         }
         event
+    }
+
+    pub(crate) fn fx(&mut self, kind: &'static str, x: i32, y: i32) {
+        self.fx_dir(kind, x, y, 0, 0);
+    }
+
+    pub(crate) fn fx_dir(&mut self, kind: &'static str, x: i32, y: i32, dx: i32, dy: i32) {
+        if self.fx.len() >= FX_CAP {
+            self.fx.remove(0);
+        }
+        self.fx.push(FxEvent { kind, x, y, dx, dy });
+    }
+
+    /// Drain the presentation cues queued since the last call.
+    pub fn take_fx(&mut self) -> Vec<FxEvent> {
+        std::mem::take(&mut self.fx)
     }
 
     pub(crate) fn say(&mut self, text: &str) {
@@ -283,6 +318,7 @@ impl GameSession {
             .position(|l| l.x == px && l.y == py);
         if let Some(li) = loot_idx {
             let loot = self.zone_mut().loot.remove(li);
+            self.fx("pickup", px, py);
             if let Some(g) = loot.gold {
                 self.player.gold += g;
                 self.say(&format!("Picked up {g} gold."));
@@ -338,6 +374,8 @@ impl GameSession {
             let zone = self.zone_mut();
             zone.enemies[idx].hp -= hit.damage;
         }
+        let (adx, ady) = (target.x - self.player.x, target.y - self.player.y);
+        self.fx_dir(if hit.is_crit { "crit" } else { "hit" }, target.x, target.y, adx, ady);
         if hit.is_crit {
             self.say(&format!("Critical! You hit {} for {}.", target.name, hit.damage));
         } else {
@@ -360,6 +398,7 @@ impl GameSession {
 
     fn on_enemy_killed(&mut self, idx: usize) -> SessionEvent {
         let enemy = self.zone_mut().enemies.remove(idx);
+        self.fx("kill", enemy.x, enemy.y);
         self.player.kills += 1;
         self.kills_this_delve += 1;
         self.delve_progress += 2;
@@ -414,6 +453,7 @@ impl GameSession {
                 if intent.target_tiles.iter().any(|t| t.x == px && t.y == py) {
                     let dmg = (intent.damage - (stats.def as f64 * 0.65).round() as i32).max(1);
                     self.player.hp -= dmg;
+                    self.fx_dir("player_hit", px, py, px - enemy.x, py - enemy.y);
                     self.say(&format!("{} lands {} on you for {}.", enemy.name, intent.label, dmg));
                 }
                 self.zone_mut().enemies[i].intent = None;
@@ -426,12 +466,14 @@ impl GameSession {
                     choose_enemy_intent(&enemy, &self.player, &zone_snapshot, &mut self.rng);
                 match intent {
                     Some(it) if it.kind == IntentType::HeavyWindup => {
+                        self.fx("windup", enemy.x, enemy.y);
                         self.say(&format!("{} winds up: {}!", enemy.name, it.label));
                         self.zone_mut().enemies[i].intent = Some(it);
                     }
                     _ => {
                         let dmg = (enemy.atk - (stats.def as f64 * 0.65).round() as i32).max(1);
                         self.player.hp -= dmg;
+                        self.fx_dir("player_hit", px, py, px - enemy.x, py - enemy.y);
                         self.say(&format!("{} hits you for {}.", enemy.name, dmg));
                     }
                 }

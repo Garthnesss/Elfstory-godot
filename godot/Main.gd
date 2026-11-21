@@ -25,6 +25,33 @@ const TALL_HEIGHTS := {
 	"vault_door": 2.6, # sealed doors stand in the wall line until opened
 }
 
+# Combat/loot feel (REEBOO Stylized VFX sample, MIT — addons/reeboo_vfx).
+const VFX_HIT := preload("res://addons/reeboo_vfx/effects/hit_spark.tscn")
+const VFX_SLASH := preload("res://addons/reeboo_vfx/effects/slash.tscn")
+const VFX_SPARKLE := preload("res://addons/reeboo_vfx/effects/pickup_sparkle.tscn")
+
+## Sound per core fx cue / UI action: the first path that exists plays.
+## assets/audio/ui = Kenney Interface Sounds (CC0). assets/audio/rpg =
+## Kenney RPG Audio (CC0) once it's in the project; until then combat cues
+## with only rpg paths stay silent.
+const SFX := {
+	"hit": ["res://assets/audio/rpg/knifeSlice.ogg"],
+	"crit": ["res://assets/audio/rpg/knifeSlice2.ogg", "res://assets/audio/rpg/knifeSlice.ogg"],
+	"kill": ["res://assets/audio/rpg/chop.ogg"],
+	"player_hit": ["res://assets/audio/rpg/cloth1.ogg"],
+	"pickup": ["res://assets/audio/rpg/handleCoins.ogg", "res://assets/audio/ui/drop_002.wav"],
+	"chest": ["res://assets/audio/rpg/metalLatch.ogg", "res://assets/audio/ui/confirmation_002.wav"],
+	"brazier": ["res://assets/audio/ui/maximize_006.wav"],
+	"waystone": ["res://assets/audio/ui/maximize_006.wav"],
+	"unseal": ["res://assets/audio/rpg/doorOpen_1.ogg", "res://assets/audio/ui/bong_001.wav"],
+	"level_up": ["res://assets/audio/ui/confirmation_004.wav"],
+	"prompt": ["res://assets/audio/ui/question_001.wav"],
+	"ui_click": ["res://assets/audio/ui/click_001.wav"],
+}
+const SFX_VOICES := 6
+const SLASH_SCALE := 0.55 # slash.tscn spans ~3 units; tiles are 1
+const SPARKLE_SECONDS := 0.8
+
 var session: Object # ElfStorySession (GDExtension class)
 var state: Dictionary = {}
 
@@ -36,6 +63,10 @@ var landmarks_root: Node3D
 var forge_lights: Array = []
 var _flicker_t := 0.0
 var entities_root: Node3D
+var fx_root: Node3D
+var sfx_players: Array = []
+var sfx_next := 0
+var sfx_cache := {} # path -> AudioStream (or null when missing)
 
 var player_node: Node3D
 var entity_nodes: Dictionary = {} # key -> Node3D
@@ -79,6 +110,13 @@ func _ready() -> void:
 	entities_root = Node3D.new()
 	entities_root.name = "Entities"
 	add_child(entities_root)
+	fx_root = Node3D.new()
+	fx_root.name = "FX"
+	add_child(fx_root)
+	for i in SFX_VOICES:
+		var ap := AudioStreamPlayer.new()
+		add_child(ap)
+		sfx_players.append(ap)
 
 	build_ui()
 
@@ -115,6 +153,7 @@ func refresh() -> void:
 		current_build_key = build_key
 		rebuild_world()
 	refresh_entities()
+	play_fx()
 
 
 ## Bridge events are plain strings; panels are the only side effects here —
@@ -123,6 +162,7 @@ func handle_event(ev: String) -> void:
 	if ev.begins_with("dialogue:"):
 		open_dialogue(ev.trim_prefix("dialogue:"))
 	elif ev.begins_with("prompt:"):
+		play_sfx("prompt")
 		render_prompt()
 	elif ev.begins_with("merchant:"):
 		open_merchant(ev.trim_prefix("merchant:"))
@@ -758,6 +798,7 @@ func make_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.add_theme_font_size_override("font_size", 14)
+	b.pressed.connect(play_sfx.bind("ui_click"))
 	return b
 
 
@@ -1003,3 +1044,76 @@ func _flicker_forge(delta: float) -> void:
 			var base := float(l.get_meta("base_energy", 3.0))
 			var n := sin(_flicker_t * 11.0 + float(i) * 1.7) * 0.6 + sin(_flicker_t * 23.7 + float(i) * 3.1) * 0.4
 			l.light_energy = base * (0.9 + 0.1 * n)
+
+
+# ---------------------------------------------------------------------------
+# Presentation cues: VFX + sound for what the core says just happened
+# ---------------------------------------------------------------------------
+
+## Drain the core's fx cues (hit, kill, pickup, chest, ...) and play them.
+## Called from refresh(), i.e. after every forwarded action.
+func play_fx() -> void:
+	var parsed: Variant = JSON.parse_string(session.take_fx_json())
+	if not (parsed is Array):
+		return
+	for c in parsed:
+		var cue: Dictionary = c
+		var kind := str(cue.get("kind", ""))
+		var at := Vector3(float(cue.get("x", 0)), 0.6, float(cue.get("y", 0)))
+		var dir := Vector3(float(cue.get("dx", 0)), 0.0, float(cue.get("dy", 0)))
+		match kind:
+			"hit", "crit":
+				# The slash is authored at character scale, swinging along -Z
+				# from the attacker's origin: spawn it on the attacker's tile,
+				# facing the target, shrunk to the 1-unit tile grid.
+				if dir.length() > 0.0:
+					var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
+					var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
+					swing.scale = Vector3.ONE * SLASH_SCALE
+				spawn_vfx(VFX_HIT, at, 1.5 if kind == "crit" else 1.0)
+			"kill":
+				spawn_vfx(VFX_HIT, at, 1.8)
+			"player_hit":
+				spawn_vfx(VFX_HIT, at, 0.7)
+			"unseal":
+				spawn_vfx(VFX_HIT, at + Vector3(0, 0.6, 0), 2.0)
+			"pickup", "chest", "brazier", "waystone":
+				spawn_sparkle(at, 1.0)
+			"level_up":
+				spawn_sparkle(at, 1.6)
+		play_sfx(kind)
+
+
+func spawn_vfx(scene: PackedScene, at: Vector3, scale: float) -> void:
+	var fx := VFXEffect.spawn(scene, fx_root, at)
+	fx.scale = Vector3.ONE * scale
+
+
+## pickup_sparkle loops until stopped; stop() lets live particles finish
+## and then frees the node (auto_free).
+func spawn_sparkle(at: Vector3, scale: float) -> void:
+	var fx := VFXEffect.spawn(VFX_SPARKLE, fx_root, at)
+	fx.scale = Vector3.ONE * scale
+	get_tree().create_timer(SPARKLE_SECONDS).timeout.connect(func():
+		if is_instance_valid(fx):
+			fx.stop())
+
+
+func play_sfx(kind: String) -> void:
+	var stream := sfx_stream(kind)
+	if stream == null:
+		return
+	var ap: AudioStreamPlayer = sfx_players[sfx_next]
+	sfx_next = (sfx_next + 1) % sfx_players.size()
+	ap.stream = stream
+	ap.play()
+
+
+func sfx_stream(kind: String) -> AudioStream:
+	for path in SFX.get(kind, []):
+		if not sfx_cache.has(path):
+			sfx_cache[path] = load(path) if ResourceLoader.exists(path) else null
+		if sfx_cache[path] != null:
+			return sfx_cache[path]
+	return null
+

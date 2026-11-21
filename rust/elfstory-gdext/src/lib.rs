@@ -184,6 +184,17 @@ impl ElfStorySession {
         }
     }
 
+    /// Presentation cues since the last call, as a JSON array of
+    /// {kind, x, y, dx, dy}: hit, crit, kill, player_hit, windup, pickup,
+    /// chest, brazier, waystone, unseal, level_up. Draining.
+    #[func]
+    fn take_fx_json(&mut self) -> GString {
+        match &mut self.inner {
+            Some(s) => GString::from(&serde_json::to_string(&s.take_fx()).unwrap_or_else(|_| "[]".into())),
+            None => GString::from("[]"),
+        }
+    }
+
     /// Dev/capture only (debug builds): warp to a zone id ("dungeon_3",
     /// "overworld", ...) at (x, y); x < 0 uses the zone's entry tile.
     #[cfg(debug_assertions)]

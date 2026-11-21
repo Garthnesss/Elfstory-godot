@@ -196,6 +196,7 @@ impl GameSession {
             return;
         }
         unseal(t);
+        self.fx("unseal", x, y);
         for e in self.zone_mut().enemies.iter_mut() {
             if chebyshev(e.x, e.y, x, y) <= 8 {
                 e.alerted = true;
@@ -215,6 +216,7 @@ impl GameSession {
         };
         let depth = self.zone().depth;
         self.tile_rev += 1;
+        self.fx("chest", x, y);
         let id = interact_id.as_deref().unwrap_or("");
 
         if id == "overworld_satchel_chest" {
@@ -299,6 +301,7 @@ impl GameSession {
             t.interact_id.clone()
         };
         self.tile_rev += 1;
+        self.fx("brazier", x, y);
         let d = compute_derived_stats(&self.player, Some(&self.flags), Some(&self.town));
         self.player.max_hp = d.max_hp;
         self.player.hp = d.max_hp;
@@ -312,16 +315,20 @@ impl GameSession {
                 // Brazier-Sealed Door open.
                 let (lit, total) = self.seal_brazier_counts();
                 if lit >= total && total > 0 {
-                    let mut opened = false;
+                    let mut opened = vec![];
                     for t in self.zone_mut().tiles.iter_mut().flatten() {
                         if t.interact_id.as_deref() == Some("seal_door")
                             && t.kind == TileKind::VaultDoor
                         {
                             unseal(t);
                             t.label = Some("Unsealed Reliquary Door".into());
-                            opened = true;
+                            opened.push((t.x, t.y));
                         }
                     }
+                    for &(dx, dy) in &opened {
+                        self.fx("unseal", dx, dy);
+                    }
+                    let opened = !opened.is_empty();
                     if opened {
                         self.say(
                             "The last Seal Brazier catches — somewhere in the hall, a rune-seal grinds open!",
@@ -392,6 +399,7 @@ impl GameSession {
         };
 
         // recordWaystone
+        self.fx("waystone", x, y);
         if let Some(t) = self.tile_mut(x, y) {
             t.used = Some(true);
         }
@@ -733,9 +741,32 @@ mod tests {
         assert!(s.player.gold >= gold + 18 + 3 * 14);
         assert!(s.log.last().unwrap().starts_with("Opened chest:"));
         assert!(s.used_tiles().contains(&[cx, cy]));
+        // The front-end gets a chest cue at the chest, once.
+        let fx = s.take_fx();
+        assert!(fx.iter().any(|f| f.kind == "chest" && (f.x, f.y) == (cx, cy)), "{fx:?}");
+        assert!(s.take_fx().is_empty(), "take_fx drains");
     }
 
     #[test]
+    fn bump_attack_emits_a_directed_hit_cue() {
+        let z = find_zone(ZoneId::Dungeon(1), |z| !z.enemies.is_empty());
+        let mut s = session();
+        load(&mut s, z);
+        let e = s.zone().enemies[0].clone();
+        // Stand west of the enemy (tile validity doesn't matter for a bump).
+        s.player.x = e.x - 1;
+        s.player.y = e.y;
+        s.take_fx();
+        s.move_player(1, 0);
+        let fx = s.take_fx();
+        let hit = fx
+            .iter()
+            .find(|f| f.kind == "hit" || f.kind == "crit")
+            .expect("hit cue");
+        assert_eq!((hit.x, hit.y, hit.dx, hit.dy), (e.x, e.y, 1, 0));
+    }
+
+        #[test]
     fn consumables_stack_on_pickup() {
         let mut s = session();
         let before = s.player.inventory.len();
