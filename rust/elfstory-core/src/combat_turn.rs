@@ -720,6 +720,30 @@ impl GameSession {
                     }
                 }
                 self.say(&format!("Ember Lance sears {name} for {total} fire dmg!"));
+                // Rank 2 "pierces 1 tile behind" (in the web version's text
+                // but never implemented; added at Garth's call, Nov 21): the
+                // lance carries on one tile past the target, away from the
+                // caster, at the rank-3 splash strength (60% + Burn 5/t 2t).
+                // Rank 3's blast already covers that tile, so no double hit.
+                if rank == 2 {
+                    let (bx, by) = (cx + (cx - px).signum(), cy + (cy - py).signum());
+                    if let Some(j) = self
+                        .zone()
+                        .enemies
+                        .iter()
+                        .position(|e| e.hp > 0 && e.id != target_id && e.x == bx && e.y == by)
+                    {
+                        let pierce = (total as f64 * 0.6).round() as i32;
+                        let behind = {
+                            let e = &mut self.zone_mut().enemies[j];
+                            e.hp -= pierce;
+                            apply_status(&mut e.statuses, StatusKind::Burn, 2, 5);
+                            e.name.clone()
+                        };
+                        self.damage_cue(j, false, false);
+                        self.say(&format!("Ember Lance pierces through to {behind} for {pierce}!"));
+                    }
+                }
             }
             // Passives are never cast (no rank-gated hotbar entry, and
             // targeting Passive validates to no target above).
@@ -1269,6 +1293,27 @@ mod tests {
         let e = enemy(&s, &id).unwrap();
         assert_eq!(status(e, StatusKind::Burn).map(|b| (b.turns, b.potency)), Some((1, 3)));
         assert!(s.log.iter().any(|l| l.starts_with("Ember Lance sears")));
+    }
+
+    #[test]
+    fn ember_lance_rank_2_pierces_one_tile_behind_the_target() {
+        for (rank, expect_pierce) in [(1, false), (2, true)] {
+            let mut s = arena(StarterClass::Runecaster);
+            give(&mut s, SkillId::EmberLance, rank);
+            let target = add_enemy(&mut s, 9, 9, 900); // diagonal from (7,7)
+            let behind = add_enemy(&mut s, 10, 10, 900); // next tile on that line
+            let beside = add_enemy(&mut s, 10, 9, 900); // adjacent, not behind
+            s.execute_skill(SkillId::EmberLance, 9, 9);
+            assert!(enemy(&s, &target).unwrap().hp < 900);
+            let b = enemy(&s, &behind).unwrap();
+            assert_eq!(b.hp < 900, expect_pierce, "rank {rank} pierce");
+            assert_eq!(status(b, StatusKind::Burn).is_some(), expect_pierce);
+            assert_eq!(enemy(&s, &beside).unwrap().hp, 900, "only the tile behind");
+            assert_eq!(
+                s.log.iter().any(|l| l.starts_with("Ember Lance pierces through")),
+                expect_pierce
+            );
+        }
     }
 
     #[test]
