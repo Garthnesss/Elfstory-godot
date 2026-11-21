@@ -856,8 +856,12 @@ impl GameSession {
             }
 
             // Enemy skill cooldowns + DoT tick + status countdown.
-            let dot = {
+            // Stun is read BEFORE the countdown (Garth, Nov 21): TS ticked
+            // first, so a 1-turn stun had expired by the time the enemy
+            // acted. Now a stun of N turns skips N enemy turns.
+            let (dot, was_stunned) = {
                 let e = &mut self.zone_mut().enemies[i];
+                let was_stunned = e.statuses.iter().any(|s| s.kind == StatusKind::Stunned);
                 if let Some(cds) = e.skill_cooldowns.as_mut() {
                     cds.retain(|_, v| *v > 1);
                     for v in cds.values_mut() {
@@ -870,7 +874,7 @@ impl GameSession {
                 }
                 e.statuses.retain(|s| s.turns > 0);
                 e.hp -= dot;
-                dot
+                (dot, was_stunned)
             };
             if dot > 0 && self.zone().enemies[i].hp <= 0 {
                 let name = self.zone().enemies[i].name.clone();
@@ -883,8 +887,9 @@ impl GameSession {
             }
 
             let enemy = self.zone().enemies[i].clone();
-            if enemy.statuses.iter().any(|s| s.kind == StatusKind::Stunned) {
+            if was_stunned {
                 self.zone_mut().enemies[i].intent = None;
+                self.say(&format!("{} is stunned.", enemy.name));
                 continue;
             }
             let dist = chebyshev(enemy.x, enemy.y, px, py);
@@ -1188,6 +1193,27 @@ mod tests {
         // Rank 2 shield: (2t, +4) ticked once by the enemy turn.
         let sh = s.player.statuses.iter().find(|x| x.kind == StatusKind::Shielded).unwrap();
         assert_eq!((sh.turns, sh.potency), (1, 4));
+    }
+
+    #[test]
+    fn a_one_turn_bash_stun_skips_the_enemys_next_turn() {
+        let mut s = arena(StarterClass::Vanguard);
+        give(&mut s, SkillId::ShieldBash, 1);
+        let id = add_enemy(&mut s, 8, 7, 400);
+        s.zone_mut().enemies[0].alerted = true;
+        let hp = s.player.hp;
+        s.execute_skill(SkillId::ShieldBash, 8, 7);
+        assert_eq!(s.player.hp, hp, "the bashed foe loses its turn");
+        assert!(s.log.last().unwrap().ends_with("is stunned."));
+        // The stun is spent: next turn it acts again (strike or windup).
+        assert!(status(enemy(&s, &id).unwrap(), StatusKind::Stunned).is_none());
+        let log_len = s.log.len();
+        s.wait_turn();
+        assert!(
+            s.log[log_len..].iter().any(|l| l.contains("Crypt Sentinel")),
+            "acts after the stun: {:?}",
+            &s.log[log_len..]
+        );
     }
 
     #[test]

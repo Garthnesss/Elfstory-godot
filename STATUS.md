@@ -223,7 +223,7 @@ and glTF inspection rather than assumed:
   - Hotbar (bottom-right; keys 1–5, click works too); while aiming, the movement keys move the cursor, Tab cycles, F/Enter casts, Esc cancels.
   - Yellow aim tile, red telegraph tiles where windups will land, skills panel (K) with Learn buttons, Space or `.` to wait, statuses and skill points in the HUD, VFX for skill cues.
 - **TS quirks kept as-is, for Garth to decide:**
-  1. Statuses count down before the stun check, so a 1-turn stun (Bastion Bash r1–2, Rime Nova r2–3) has expired by the time the enemy acts. It only cancels a telegraphed attack. Seen in-game: the bashed sentinel hit back the same turn.
+  1. ~~1-turn stuns expired before the enemy acted.~~ **Fixed (Garth, Nov 21):** the stun is now read before the status countdown, so an N-turn stun skips N enemy turns, and the log says "<enemy> is stunned." Test: `a_one_turn_bash_stun_skips_the_enemys_next_turn`.
   2. Ember Lance r2 says "pierces 1 tile behind", but TS never implemented it.
 - **Found, not changed:** serde writes the `string_enum!` types as Rust variant names (`"ShieldBash"`), not TS ids (`"shield_bash"`). This affects save JSON (`SAVE_VERSION` 1) and `state_json`'s player block. It's internally consistent, but not TS-save-compatible.
 - **Verified:** cargo test 97/97 (13 new: each active skill, stun skip, DoT ticks both ways, mana regen, kill passives, learning, targeting order and cycling, id parsing). The gdext build is clean, and the headless RUN1 check and Main scene run with no script errors. In-game captures on Floor 2 show the aim tile, the cleave slash, the bash flash with a "cd 2t" hotbar, and a telegraph tile; Oakhaven's textured buildings still render.
