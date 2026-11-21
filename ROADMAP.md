@@ -44,3 +44,11 @@ Full survey and reasoning: `docs/godot-asset-library-shortlist.md`. Every visual
 - [ ] Later candidates: grass/foliage (Simple Grass Textured or Open Stylized 3D grass), Debug Draw 3D (dev), Phantom Camera (polish).
 - Skipped for now: Sky3D (fights golden hour), dialogue add-ons (dialogue lives in Rust), Terrain3D (tile grid), flat low-poly model packs (style rejected).
 
+
+## Next queue (Garth, Nov 21, 2026 — start next session)
+Garth picked all four; take them in this order unless he says otherwise:
+1. [ ] **Grass & foliage** — scatter stylized grass over Oakhaven + Silverwood Vale meadow tiles (Simple Grass Textured or Open Stylized 3D grass, see `docs/godot-asset-library-shortlist.md`). Visual: asset gate + Garth's approval before commit; in-game captures at tactical and chase zoom.
+2. [ ] **Platypus feet** — side-by-side of shipped `oakhaven_platypus.glb` vs raw TRELLIS source (`~/GLocalLM/workspace/3d/`) at close zoom; fix-or-accept is Garth's call.
+3. [ ] **Title & save slots** — real title screen, 3 save slots (core already supports them), difficulty choice (Story / Standard / Hardened) at New Game, app icon.
+4. [ ] **Town loop feel** — ActRaiser growth visible in Oakhaven (houses/fields appearing per Population Tier) and the rebuilt-Blacksmith moment on its chosen lot.
+Also open: remaining combat gaps (companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste); Garth's playtest notes from the app.
