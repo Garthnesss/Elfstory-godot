@@ -204,13 +204,13 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
     let mut placements: Vec<WorldModelPlacement> = vec![
         placement(
             "landmark:torin_forge",
-            "/models/blacksmith.glb",
+            "procedural://cold_forge_ruin",
             7.0,
             2.0,
             0.0,
             4.4,
             Some(TerrainFootprint::new(5, 9, 1, 3)),
-            Some(PlacementLight { color: 0xff8c2b, intensity: 3.0, distance: 7.0, offset: [-0.9, 0.95, 0.85] }),
+            None,
         ),
         placement(
             "landmark:mira_apothecary",
@@ -311,6 +311,16 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
             Some(TerrainFootprint::new(3, 3, 6, 6)),
             None,
         ));
+        placements.push(placement(
+            "growth:tier1_garden_field",
+            "procedural://village_field",
+            4.5,
+            4.5,
+            0.0,
+            1.8,
+            None,
+            None,
+        ));
     }
     if tier >= 2 {
         // Note: the TS tier-2 platypus placement has NO hideTerrainFootprint.
@@ -324,6 +334,21 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
             None,
             None,
         ));
+        placements.push(placement(
+            "growth:tier2_settler_cottage",
+            "procedural://village_cottage",
+            15.0,
+            2.5,
+            0.0,
+            2.2,
+            None,
+            Some(PlacementLight {
+                color: 0xffb347,
+                intensity: 1.8,
+                distance: 4.5,
+                offset: [0.0, 0.8, 0.9],
+            }),
+        ));
     }
     if tier >= 3 {
         placements.push(placement(
@@ -334,6 +359,31 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
             3.9,
             2.3,
             Some(TerrainFootprint::new(25, 25, 4, 4)),
+            None,
+        ));
+        placements.push(placement(
+            "growth:tier3_east_cottage",
+            "procedural://village_cottage",
+            9.5,
+            9.5,
+            0.0,
+            2.2,
+            None,
+            Some(PlacementLight {
+                color: 0xffb347,
+                intensity: 1.8,
+                distance: 4.5,
+                offset: [0.0, 0.8, 0.9],
+            }),
+        ));
+        placements.push(placement(
+            "growth:tier3_harvest_field",
+            "procedural://village_field",
+            17.5,
+            5.0,
+            0.0,
+            1.8,
+            None,
             None,
         ));
     }
@@ -453,15 +503,22 @@ mod tests {
         };
         let ids = |ps: &[WorldModelPlacement]| ps.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
         assert!(!ids(&at(19)).iter().any(|i| i.starts_with("growth:")));
-        assert!(ids(&at(20)).contains(&"growth:tier1_west_arbor".to_string()));
+        let t1 = ids(&at(20));
+        assert!(t1.contains(&"growth:tier1_west_arbor".to_string()));
+        assert!(t1.contains(&"growth:tier1_garden_field".to_string()));
         let t2 = at(35);
-        assert!(ids(&t2).contains(&"growth:tier2_pond_totem".to_string()));
+        let t2_ids = ids(&t2);
+        assert!(t2_ids.contains(&"growth:tier2_pond_totem".to_string()));
+        assert!(t2_ids.contains(&"growth:tier2_settler_cottage".to_string()));
         // TS pins: the tier-2 platypus carries no terrain footprint.
         let platypus = t2.iter().find(|p| p.id == "growth:tier2_pond_totem").unwrap();
         assert_eq!(platypus.hide_terrain_footprint, None);
         let t3 = at(55);
-        assert!(ids(&t3).contains(&"growth:tier3_east_grove".to_string()));
-        assert_eq!(t3.len(), 7 + 3);
+        let t3_ids = ids(&t3);
+        assert!(t3_ids.contains(&"growth:tier3_east_grove".to_string()));
+        assert!(t3_ids.contains(&"growth:tier3_east_cottage".to_string()));
+        assert!(t3_ids.contains(&"growth:tier3_harvest_field".to_string()));
+        assert_eq!(t3.len(), 7 + 7);
     }
 
     #[test]

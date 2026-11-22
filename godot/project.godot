@@ -5,6 +5,8 @@ config_version=5
 
 [application]
 
+config/icon="res://assets/icon/elfstory_icon.png"
+
 run/main_scene="res://Main.tscn"
 
 config/name="ElfStory Reborn"

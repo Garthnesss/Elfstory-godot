@@ -1,17 +1,7 @@
 //! Turn-based combat for the session: the player's melee strike, the eight
 //! active skills (with Arcane Echo, Flexible Combat, Carry the World and
-//! Arcane Conduit), skill aiming/hotbar/learning, and the enemy turn with
-//! its status bookkeeping. Ports of App.tsx `attemptStep` (enemy bump),
-//! `executeSkill`, `handleTriggerHotbar` / `handleCycleTarget` /
-//! `handleConfirmAimedTarget` / `getInRangeEnemies`, `handleLearnSkill` /
-//! `handleAssignHotbar`, `runEnemyTurns`, and the passive hooks in
-//! `handleEnemyDeath`.
-//!
-//! Deliberately not ported here (separate gaps, see STATUS.md): companion
-//! turns, critters / townsfolk wander / ambient barks, Grave Husk and Spore
-//! Hulk death quirks, boss confrontation prompts, haste steps.
-//!
-//! Every TS `Math.random()` draw comes from the session RNG.
+//! Arcane Conduit), skill aiming/hotbar/learning, companion turns, and the
+//! enemy turn with status bookkeeping and boss confrontations.
 
 use crate::combat::{
     apply_status, calculate_player_hit, chebyshev, choose_enemy_intent, compute_visibility,
@@ -21,9 +11,53 @@ use crate::session::{GameSession, SessionEvent};
 use crate::skills::{can_learn_skill, has_prodigy, skill_def};
 use crate::types::*;
 
-/// TS `getSightRadius` without the owl companion bonus (companions are not
-/// ported yet).
 pub const SIGHT_RADIUS: i32 = 8;
+
+pub(crate) fn companion_max_hp(kind: CompanionKind, level: i32) -> i32 {
+    match kind {
+        CompanionKind::StarlightOwl => 20 + (level - 1) * 5,
+        CompanionKind::SilverwindLynx => 24 + (level - 1) * 7,
+    }
+}
+
+pub(crate) fn make_companion(kind: CompanionKind, x: i32, y: i32, level: i32) -> CompanionState {
+    let max_hp = companion_max_hp(kind, level);
+    let name = match kind {
+        CompanionKind::StarlightOwl => "Starlight Owl",
+        CompanionKind::SilverwindLynx => "Silverwind Lynx",
+    };
+    CompanionState {
+        kind,
+        name: name.to_string(),
+        x,
+        y,
+        hp: max_hp,
+        max_hp,
+        respawn_cooldown: 0,
+    }
+}
+
+pub(crate) fn place_companion_near(zone: &ZoneMap, px: i32, py: i32) -> Pos {
+    const OFFSETS: [(i32, i32); 8] = [
+        (-1, 0), (1, 0), (0, 1), (0, -1),
+        (-1, 1), (1, 1), (-1, -1), (1, -1),
+    ];
+    for (dx, dy) in OFFSETS {
+        let nx = px + dx;
+        let ny = py + dy;
+        if nx < 0 || ny < 0 || nx >= zone.width || ny >= zone.height {
+            continue;
+        }
+        let tile = &zone.tiles[ny as usize][nx as usize];
+        if tile.walkable
+            && !zone.enemies.iter().any(|e| e.hp > 0 && e.x == nx && e.y == ny)
+            && !zone.npcs.iter().any(|n| n.x == nx && n.y == ny)
+        {
+            return Pos::new(nx, ny);
+        }
+    }
+    Pos::new(px, py)
+}
 
 pub fn skill_rank(p: &PlayerState, id: SkillId) -> i32 {
     p.skills.get(id.as_str()).copied().unwrap_or(0)
@@ -49,9 +83,19 @@ pub fn effective_range(id: SkillId, rank: i32, base: i32) -> i32 {
 }
 
 impl GameSession {
+    pub(crate) fn sight_radius(&self) -> i32 {
+        let owl = self
+            .player
+            .companion
+            .as_ref()
+            .is_some_and(|c| c.kind == CompanionKind::StarlightOwl && c.hp > 0 && c.respawn_cooldown == 0);
+        SIGHT_RADIUS + if owl { 1 } else { 0 }
+    }
+
     pub(crate) fn refresh_visibility(&mut self) {
         let (px, py) = (self.player.x, self.player.y);
-        compute_visibility(self.zone_mut(), px, py, SIGHT_RADIUS);
+        let radius = self.sight_radius();
+        compute_visibility(self.zone_mut(), px, py, radius);
     }
 
     fn enemy_idx(&self, id: &str) -> Option<usize> {
@@ -775,7 +819,7 @@ impl GameSession {
 
     /// TS checkPlayerFatal: true when the player is dead (Cauterize may
     /// deny the first death every 25 turns).
-    fn check_player_fatal(&mut self, max_hp: i32) -> bool {
+    pub(crate) fn check_player_fatal(&mut self, max_hp: i32) -> bool {
         if self.player.hp > 0 {
             return false;
         }
@@ -799,12 +843,137 @@ impl GameSession {
         true
     }
 
+    fn run_companion_turn(&mut self, stats: &DerivedStats, event: &mut SessionEvent) {
+        let Some(comp) = self.player.companion.clone() else { return };
+        let (px, py) = (self.player.x, self.player.y);
+
+        if comp.respawn_cooldown > 0 {
+            let rem = comp.respawn_cooldown - 1;
+            if rem == 0 {
+                let pos = place_companion_near(self.zone(), px, py);
+                if let Some(c) = self.player.companion.as_mut() {
+                    c.respawn_cooldown = 0;
+                    c.hp = c.max_hp;
+                    c.x = pos.x;
+                    c.y = pos.y;
+                }
+                self.fx("companion", pos.x, pos.y);
+                self.say(&format!("{} reforms beside you!", comp.name));
+            } else if let Some(c) = self.player.companion.as_mut() {
+                c.respawn_cooldown = rem;
+            }
+            return;
+        }
+        if comp.hp <= 0 {
+            return;
+        }
+
+        // Aura trickle.
+        match comp.kind {
+            CompanionKind::SilverwindLynx
+                if self.player.turns_elapsed % 3 == 0 && self.player.hp < stats.max_hp =>
+            {
+                self.heal_player(2);
+            }
+            CompanionKind::StarlightOwl
+                if self.player.turns_elapsed % 2 == 0 && self.player.mana < stats.max_mana =>
+            {
+                self.restore_mana(1);
+            }
+            _ => {}
+        }
+
+        let adj_id = self
+            .zone()
+            .enemies
+            .iter()
+            .filter(|e| {
+                e.hp > 0
+                    && e.pacified != Some(true)
+                    && chebyshev(comp.x, comp.y, e.x, e.y) == 1
+            })
+            .min_by_key(|e| e.hp)
+            .map(|e| e.id.clone());
+
+        if let Some(eid) = adj_id {
+            if let Some(idx) = self.enemy_idx(&eid) {
+                let (t_def, t_name, tx, ty) = {
+                    let e = &self.zone().enemies[idx];
+                    (e.def, e.name.clone(), e.x, e.y)
+                };
+                let base_dmg = match comp.kind {
+                    CompanionKind::SilverwindLynx => {
+                        6 + (self.player.level as f64 * 2.4).floor() as i32
+                            + (self.player.attributes.agility as f64 * 0.6).floor() as i32
+                    }
+                    CompanionKind::StarlightOwl => {
+                        5 + (self.player.level as f64 * 2.0).floor() as i32
+                            + (self.player.attributes.arcana as f64 * 0.7).floor() as i32
+                    }
+                };
+                let is_crit = comp.kind == CompanionKind::SilverwindLynx && self.rng.next_f32() < 0.2;
+                let mult = if is_crit { 1.6 } else { 1.0 };
+                let final_dmg = 2.max((base_dmg as f64 * mult - t_def as f64 * 0.45).round() as i32);
+                self.zone_mut().enemies[idx].hp -= final_dmg;
+                self.fx_dir("companion_hit", tx, ty, tx - comp.x, ty - comp.y);
+                self.say(&format!("{} strikes {t_name} for {final_dmg} dmg!", comp.name));
+                if comp.kind == CompanionKind::StarlightOwl {
+                    self.restore_mana(1);
+                }
+                if self.zone().enemies[idx].hp <= 0 {
+                    let ev = self.on_enemy_killed(idx);
+                    if ev != SessionEvent::None {
+                        *event = ev;
+                    }
+                }
+            }
+            return;
+        }
+
+        let max_leash = 6;
+        let z = self.zone();
+        let pursue = z
+            .enemies
+            .iter()
+            .filter(|e| {
+                e.hp > 0
+                    && e.pacified != Some(true)
+                    && chebyshev(px, py, e.x, e.y) <= max_leash
+                    && (z.tiles[e.y as usize][e.x as usize].visible || e.alerted)
+            })
+            .min_by_key(|e| chebyshev(comp.x, comp.y, e.x, e.y))
+            .map(|e| Pos::new(e.x, e.y));
+
+        let goal = if let Some(target) = pursue {
+            Some(target)
+        } else if chebyshev(comp.x, comp.y, px, py) > 2 {
+            Some(Pos::new(px, py))
+        } else {
+            None
+        };
+
+        if let Some(g) = goal {
+            if let Some(step) = find_path_next_step(z, comp.x, comp.y, g.x, g.y) {
+                let blocked = (step.x == px && step.y == py)
+                    || z.enemies.iter().any(|e| e.hp > 0 && e.x == step.x && e.y == step.y);
+                if !blocked {
+                    if let Some(c) = self.player.companion.as_mut() {
+                        c.x = step.x;
+                        c.y = step.y;
+                    }
+                }
+            }
+        }
+    }
+
     /// TS runEnemyTurns (combat core): tick the player's statuses and
-    /// cooldowns, regen, DoTs on both sides, then every enemy acts —
-    /// stunned skip, telegraphed intents resolve (dodge, ailments),
-    /// fresh intents prime, adjacent foes strike (dodge, Phantom Reflex,
-    /// chill, thorns), the rest close in.
+    /// cooldowns, regen, DoTs on both sides, companion turn, then every
+    /// enemy acts — stunned skip, telegraphed intents resolve, fresh intents
+    /// prime, adjacent foes strike player or companion, the rest close in.
     pub(crate) fn run_enemy_turns(&mut self) -> SessionEvent {
+        if self.player.hp <= 0 {
+            return self.wake_in_oakhaven();
+        }
         let prev_regen = self.player.statuses.iter().find(|s| s.kind == StatusKind::Regen).copied();
         let incoming_dots: Vec<StatusEffect> =
             self.player.statuses.iter().filter(|s| is_dot(s.kind)).copied().collect();
@@ -829,6 +998,21 @@ impl GameSession {
 
         if self.in_town() {
             self.restore_mana(2);
+            let (px, py) = (self.player.x, self.player.y);
+            let far = self
+                .player
+                .companion
+                .as_ref()
+                .is_some_and(|c| chebyshev(c.x, c.y, px, py) > 2);
+            let pos = if far { Some(place_companion_near(self.zone(), px, py)) } else { None };
+            if let Some(c) = self.player.companion.as_mut() {
+                c.hp = c.max_hp;
+                c.respawn_cooldown = 0;
+                if let Some(np) = pos {
+                    c.x = np.x;
+                    c.y = np.y;
+                }
+            }
             self.refresh_visibility();
             return SessionEvent::None;
         }
@@ -869,6 +1053,14 @@ impl GameSession {
             }
         }
 
+        if !player_died {
+            self.run_companion_turn(&stats, &mut event);
+            if self.player.hp <= 0 {
+                player_died = true;
+            }
+        }
+
+        let sight = self.sight_radius();
         let ids: Vec<String> = self.zone().enemies.iter().map(|e| e.id.clone()).collect();
         for eid in ids {
             if player_died {
@@ -907,6 +1099,9 @@ impl GameSession {
                 if ev != SessionEvent::None {
                     event = ev;
                 }
+                if self.player.hp <= 0 {
+                    player_died = true;
+                }
                 continue;
             }
 
@@ -918,7 +1113,7 @@ impl GameSession {
             }
             let dist = chebyshev(enemy.x, enemy.y, px, py);
             let tile_vis = self.zone().tiles[enemy.y as usize][enemy.x as usize].visible;
-            if tile_vis && dist <= SIGHT_RADIUS {
+            if tile_vis && dist <= sight {
                 self.zone_mut().enemies[i].alerted = true;
             }
             if !self.zone().enemies[i].alerted {
@@ -1032,6 +1227,10 @@ impl GameSession {
                             if ev != SessionEvent::None {
                                 event = ev;
                             }
+                            if self.player.hp <= 0 {
+                                player_died = true;
+                                break;
+                            }
                         }
                     }
                 } else {
@@ -1052,6 +1251,10 @@ impl GameSession {
                             if ev != SessionEvent::None {
                                 event = ev;
                             }
+                            if self.player.hp <= 0 {
+                                player_died = true;
+                                break;
+                            }
                         }
                     }
                     if self.check_player_fatal(stats.max_hp) {
@@ -1059,13 +1262,52 @@ impl GameSession {
                         break;
                     }
                 }
-            } else if let Some(step) = find_path_next_step(&zone_snapshot, enemy.x, enemy.y, px, py) {
-                let blocked = (step.x == px && step.y == py)
-                    || self.zone().enemies.iter().any(|o| o.hp > 0 && o.x == step.x && o.y == step.y);
-                if !blocked {
-                    let e = &mut self.zone_mut().enemies[i];
-                    e.x = step.x;
-                    e.y = step.y;
+            } else {
+                let adj_comp = self
+                    .player
+                    .companion
+                    .as_ref()
+                    .filter(|c| c.hp > 0 && c.respawn_cooldown == 0)
+                    .filter(|c| chebyshev(enemy.x, enemy.y, c.x, c.y) == 1)
+                    .map(|c| (c.kind, c.x, c.y));
+                if let Some((ckind, cx, cy)) = adj_comp {
+                    let chilled = enemy.statuses.iter().any(|s| s.kind == StatusKind::Chilled);
+                    let raw_atk = if chilled { (enemy.atk as f64 * 0.65).round() as i32 } else { enemy.atk };
+                    let comp_def = (if ckind == CompanionKind::SilverwindLynx { 2 } else { 1 })
+                        + self.player.level / 3;
+                    let comp_dmg = 1.max(raw_atk - comp_def);
+                    let mut collapsed = None;
+                    let cname = if let Some(c) = self.player.companion.as_mut() {
+                        c.hp = 0.max(c.hp - comp_dmg);
+                        if c.hp <= 0 {
+                            c.respawn_cooldown = 8;
+                            collapsed = Some(c.name.clone());
+                        }
+                        c.name.clone()
+                    } else {
+                        String::new()
+                    };
+                    self.fx("player_hit", cx, cy);
+                    self.say(&format!("{} strikes {cname} for {comp_dmg} dmg.", enemy.name));
+                    if let Some(cname) = collapsed {
+                        self.say(&format!(
+                            "{cname} collapses! Will reform in 8 turns or upon returning to town."
+                        ));
+                    }
+                } else if let Some(step) = find_path_next_step(&zone_snapshot, enemy.x, enemy.y, px, py) {
+                    let occupied_by_comp = self
+                        .player
+                        .companion
+                        .as_ref()
+                        .is_some_and(|c| c.hp > 0 && c.respawn_cooldown == 0 && step.x == c.x && step.y == c.y);
+                    let blocked = (step.x == px && step.y == py)
+                        || occupied_by_comp
+                        || self.zone().enemies.iter().any(|o| o.hp > 0 && o.x == step.x && o.y == step.y);
+                    if !blocked {
+                        let e = &mut self.zone_mut().enemies[i];
+                        e.x = step.x;
+                        e.y = step.y;
+                    }
                 }
             }
         }
@@ -1078,6 +1320,11 @@ impl GameSession {
         self.refresh_visibility();
         if player_died || self.player.hp <= 0 {
             return self.wake_in_oakhaven();
+        }
+        if self.active_prompt.is_none() {
+            if let Some(boss_ev) = self.check_boss_confrontations() {
+                return boss_ev;
+            }
         }
         event
     }
@@ -1131,6 +1378,7 @@ mod tests {
         s.player.mana = 200;
         s.player.skills.clear();
         s.player.hotbar = vec![None; 5];
+        s.player.companion = None;
         s.refresh_visibility();
         s
     }
@@ -1447,5 +1695,133 @@ mod tests {
         assert_eq!(s.aimed_target, Some(Pos::new(9, 7)));
         s.trigger_hotbar(0); // same slot again disarms
         assert_eq!(s.armed_skill, None);
+    }
+
+    #[test]
+    fn companion_fights_heals_swaps_and_reforms() {
+        let owl_run = GameSession::new_game("Garth", StarterClass::Runecaster, 1);
+        assert_eq!(owl_run.player.companion.as_ref().unwrap().kind, CompanionKind::StarlightOwl);
+        assert_eq!(owl_run.sight_radius(), SIGHT_RADIUS + 1);
+
+        let lynx_run = GameSession::new_game("Garth", StarterClass::Vanguard, 1);
+        assert_eq!(lynx_run.player.companion.as_ref().unwrap().kind, CompanionKind::SilverwindLynx);
+        assert_eq!(lynx_run.sight_radius(), SIGHT_RADIUS);
+
+        // Lynx attacks adjacent enemy and mends player on turns divisible by 3.
+        let mut s = arena(StarterClass::Vanguard);
+        s.player.companion = Some(make_companion(CompanionKind::SilverwindLynx, 8, 7, 1));
+        s.player.hp = 20;
+        s.player.turns_elapsed = 2; // next turn is 3
+        let eid = add_enemy(&mut s, 9, 7, 100);
+        s.wait_turn();
+        assert!(enemy(&s, &eid).unwrap().hp < 100, "lynx strikes adjacent enemy");
+        assert_eq!(s.player.hp, 22, "lynx mends +2 HP on turn 3");
+
+        // Player swaps tiles with active companion in dungeon.
+        s.zone_mut().enemies.clear();
+        s.player.x = 7;
+        s.player.y = 7;
+        s.player.companion.as_mut().unwrap().x = 8;
+        s.player.companion.as_mut().unwrap().y = 7;
+        s.move_player(1, 0);
+        assert_eq!((s.player.x, s.player.y), (8, 7));
+        let comp = s.player.companion.as_ref().unwrap();
+        assert_eq!((comp.x, comp.y), (7, 7));
+
+        // Enemy knocks out low-HP companion; it reforms after 8 turns.
+        let mut s2 = arena(StarterClass::Vanguard);
+        s2.player.companion = Some(make_companion(CompanionKind::SilverwindLynx, 8, 7, 1));
+        s2.player.companion.as_mut().unwrap().hp = 1;
+        let eid2 = add_enemy(&mut s2, 9, 7, 200);
+        // Move companion away from melee? Wait: companion strikes first, then enemy strikes companion.
+        s2.zone_mut().enemies[0].alerted = true;
+        s2.wait_turn();
+        assert_eq!(s2.player.companion.as_ref().unwrap().hp, 0);
+        assert_eq!(s2.player.companion.as_ref().unwrap().respawn_cooldown, 8);
+        assert!(s2.log.iter().any(|l| l.contains("collapses!")));
+        let _ = eid2;
+        s2.zone_mut().enemies.clear();
+        for _ in 0..8 {
+            s2.wait_turn();
+        }
+        let reformed = s2.player.companion.as_ref().unwrap();
+        assert_eq!(reformed.respawn_cooldown, 0);
+        assert_eq!(reformed.hp, reformed.max_hp);
+        assert!(s2.log.iter().any(|l| l.contains("reforms beside you!")));
+    }
+
+    #[test]
+    fn grave_husk_revives_once_and_spore_hulk_bursts_adjacent() {
+        let mut s = arena(StarterClass::Vanguard);
+        s.player.attributes.might = 50;
+        let mut husk = create_enemy(EnemyArchetype::GraveHusk, 8, 7, 3, DifficultyTier::Standard, 0, 1);
+        husk.id = "husk_1".into();
+        husk.hp = 5;
+        husk.max_hp = 100;
+        husk.skill_loadout = None;
+        s.zone_mut().enemies.push(husk);
+
+        // First lethal blow triggers Deathless at 30% HP with no kill credit.
+        s.move_player(1, 0);
+        assert_eq!(s.zone().enemies.len(), 1);
+        assert_eq!(s.zone().enemies[0].hp, 30);
+        assert_eq!(s.zone().enemies[0].undying_used, Some(true));
+        assert_eq!(s.player.kills, 0);
+        assert!(s.log.iter().any(|l| l.contains("refuses death")));
+
+        // Second lethal blow kills it for real.
+        s.move_player(1, 0);
+        assert!(s.zone().enemies.is_empty());
+        assert_eq!(s.player.kills, 1);
+
+        // Spore Hulk adjacent death-burst damages and poisons player.
+        let mut s2 = arena(StarterClass::Vanguard);
+        s2.player.attributes.might = 50;
+        let mut spore = create_enemy(EnemyArchetype::SporeHulk, 8, 7, 3, DifficultyTier::Standard, 0, 2);
+        spore.id = "spore_1".into();
+        spore.hp = 1;
+        spore.skill_loadout = None;
+        s2.zone_mut().enemies.push(spore);
+        let hp_before = s2.player.hp;
+        s2.move_player(1, 0);
+        // Burst deals 6 + depth*2 = 12 and applies Poison (3t, 3/t), which ticks once at end of turn.
+        assert_eq!(s2.player.hp, hp_before - (6 + 3 * 2) - 3);
+        assert!(s2.player.statuses.iter().any(|st| st.kind == StatusKind::Poison));
+        assert!(s2.log.iter().any(|l| l.contains("Spore Hulk BURSTS")));
+
+        // Spore Hulk killed at range spares the player.
+        let mut s3 = arena(StarterClass::Runecaster);
+        give(&mut s3, SkillId::EmberLance, 1);
+        let mut far_spore = create_enemy(EnemyArchetype::SporeHulk, 10, 7, 3, DifficultyTier::Standard, 0, 3);
+        far_spore.id = "spore_2".into();
+        far_spore.hp = 1;
+        far_spore.skill_loadout = None;
+        s3.zone_mut().enemies.push(far_spore);
+        let hp_far = s3.player.hp;
+        s3.execute_skill(SkillId::EmberLance, 10, 7);
+        assert_eq!(s3.player.hp, hp_far);
+        assert!(s3.log.iter().any(|l| l.contains("kept your distance")));
+    }
+
+    #[test]
+    fn haste_steps_grant_free_moves_without_enemy_turn() {
+        let mut s = arena(StarterClass::Shadowcraft);
+        let eid = add_enemy(&mut s, 7, 8, 200);
+        s.zone_mut().enemies[0].alerted = true;
+        s.player.haste_steps = Some(2);
+        let turns_before = s.player.turns_elapsed;
+        let hp_before = s.player.hp;
+
+        s.move_player(1, 0);
+        s.move_player(1, 0);
+        assert_eq!((s.player.x, s.player.y), (9, 7));
+        assert_eq!(s.player.turns_elapsed, turns_before, "haste steps spend zero turns");
+        assert_eq!(s.player.hp, hp_before, "adjacent enemy did not act during haste");
+        assert_eq!(s.player.haste_steps, Some(0));
+        assert!(s.take_fx().iter().any(|f| f.kind == "haste"));
+
+        let _ = eid;
+        s.move_player(1, 0);
+        assert_eq!(s.player.turns_elapsed, turns_before + 1, "normal turn resumes");
     }
 }

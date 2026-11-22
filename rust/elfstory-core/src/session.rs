@@ -96,12 +96,28 @@ pub struct GameSession {
 }
 
 impl GameSession {
+    /// New game at a chosen difficulty (title screen). Difficulty only
+    /// scales foes generated after this point and XP, so setting it right
+    /// after creation is equivalent to creating with it.
+    pub fn new_game_with_difficulty(name: &str, starter_class: StarterClass, seed: u32, tier: DifficultyTier) -> Self {
+        let mut s = Self::new_game(name, starter_class, seed);
+        s.tier = tier;
+        s
+    }
+
     pub fn new_game(name: &str, starter_class: StarterClass, seed: u32) -> Self {
         let preset = get_starter_preset(starter_class);
         let mut id_gen = ItemIdGen::new();
         let weapon = create_starter_item(&mut id_gen, &preset.weapon_tag);
         let oakhaven = create_oakhaven_map();
         let spawn = oakhaven.spawn_point;
+        let comp_kind = if starter_class == StarterClass::Runecaster {
+            CompanionKind::StarlightOwl
+        } else {
+            CompanionKind::SilverwindLynx
+        };
+        let comp_pos = crate::combat_turn::place_companion_near(&oakhaven, spawn.x, spawn.y);
+        let companion = crate::combat_turn::make_companion(comp_kind, comp_pos.x, comp_pos.y, 1);
         let mut player = PlayerState {
             name: name.to_string(),
             starter_class,
@@ -135,7 +151,7 @@ impl GameSession {
             turns_elapsed: 0,
             first_strike_ready: true,
             last_dir_x: Some(1),
-            companion: None,
+            companion: Some(companion),
         };
         let flags = WorldFlags {
             discovered_zones: vec![ZoneId::Oakhaven],
@@ -210,6 +226,11 @@ impl GameSession {
     pub(crate) fn seq_value(&self) -> u32 {
         self.seq
     }
+    pub(crate) fn next_seq(&mut self) -> u32 {
+        let s = self.seq;
+        self.seq += 1;
+        s
+    }
     pub(crate) fn restore_internals(&mut self, extra: HashMap<String, Value>, delve: i32, kills: i32, seq: u32) {
         self.extra_flags = extra;
         self.delve_progress = delve;
@@ -229,6 +250,15 @@ impl GameSession {
             self.player.xp_to_next = (self.player.xp_to_next as f64 * 1.48).round() as i32;
             self.player.attribute_points += 2;
             self.player.skill_points += 1;
+            let new_level = self.player.level;
+            if let Some(comp) = self.player.companion.as_mut() {
+                let comp_max = crate::combat_turn::companion_max_hp(comp.kind, new_level);
+                let delta = comp_max - comp.max_hp;
+                comp.max_hp = comp_max;
+                if comp.hp > 0 {
+                    comp.hp += delta;
+                }
+            }
             let d = self.derived();
             self.player.max_hp = d.max_hp;
             self.player.hp = d.max_hp;
@@ -333,6 +363,25 @@ impl GameSession {
                 return SessionEvent::None;
             }
         }
+        // Spirit Companion tile swap when stepping onto an active companion outside town.
+        let swap_name = if !self.in_town() {
+            self.player
+                .companion
+                .as_ref()
+                .filter(|c| c.hp > 0 && c.respawn_cooldown == 0 && c.x == nx && c.y == ny)
+                .map(|c| c.name.clone())
+        } else {
+            None
+        };
+        if let Some(cname) = swap_name {
+            let (old_x, old_y) = (self.player.x, self.player.y);
+            if let Some(c) = self.player.companion.as_mut() {
+                c.x = old_x;
+                c.y = old_y;
+            }
+            self.fx("companion", nx, ny);
+            self.say(&format!("Swapped places with {cname}."));
+        }
         self.player.x = nx;
         self.player.y = ny;
         if !self.in_town() {
@@ -378,11 +427,47 @@ impl GameSession {
             }
             _ => {}
         }
+        if let Some(steps) = self.player.haste_steps.filter(|&s| s > 0) {
+            self.player.haste_steps = Some(steps - 1);
+            self.refresh_visibility();
+            self.fx("haste", px, py);
+            return self.check_boss_confrontations().unwrap_or(SessionEvent::None);
+        }
         self.run_enemy_turns()
     }
 
     pub(crate) fn on_enemy_killed(&mut self, idx: usize) -> SessionEvent {
+        // Grave Husk "Deathless" — first lethal blow revives it at 30% HP
+        // with no kill credit or loot.
+        let is_deathless = {
+            let e = &self.zone().enemies[idx];
+            e.archetype == EnemyArchetype::GraveHusk && e.undying_used != Some(true)
+        };
+        if is_deathless {
+            let (ex, ey, revived_hp) = {
+                let e = &mut self.zone_mut().enemies[idx];
+                e.hp = 1.max((e.max_hp as f64 * 0.3).round() as i32);
+                e.undying_used = Some(true);
+                e.alerted = true;
+                e.intent = None;
+                (e.x, e.y, e.hp)
+            };
+            self.fx("deathless", ex, ey);
+            self.say(&format!(
+                "The Grave Husk refuses death — burial oaths knit it back together ({revived_hp} HP)!"
+            ));
+            return SessionEvent::None;
+        }
+
         let enemy = self.zone_mut().enemies.remove(idx);
+        if !enemy.name.starts_with("Abyssal Echo") {
+            match enemy.archetype {
+                EnemyArchetype::BossBoneCantor => self.flags.cantor_defeated = Some(true),
+                EnemyArchetype::BossAshenInquisitor => self.flags.inquisitor_defeated = Some(true),
+                EnemyArchetype::BossMalakor => self.flags.malakor_defeated = Some(true),
+                _ => {}
+            }
+        }
         self.fx("kill", enemy.x, enemy.y);
         self.player.kills += 1;
         self.kills_this_delve += 1;
@@ -390,6 +475,25 @@ impl GameSession {
         self.player.gold += enemy.gold_reward;
         self.say(&format!("{} falls. +{} gold.", enemy.name, enemy.gold_reward));
         self.kill_passives();
+
+        // Spore Hulk death-burst — point-blank kills detonate poison spores.
+        if enemy.archetype == EnemyArchetype::SporeHulk {
+            self.fx("spore_burst", enemy.x, enemy.y);
+            if crate::combat::chebyshev(self.player.x, self.player.y, enemy.x, enemy.y) <= 1 {
+                let burst_dmg = 6 + self.zone().depth * 2;
+                self.player.hp -= burst_dmg;
+                crate::combat::apply_status(&mut self.player.statuses, StatusKind::Poison, 3, 3);
+                self.fx("player_hit", self.player.x, self.player.y);
+                self.say(&format!(
+                    "The Spore Hulk BURSTS for {burst_dmg} dmg and Poison (3t)!"
+                ));
+                let max_hp = self.derived().max_hp;
+                let _ = self.check_player_fatal(max_hp);
+            } else {
+                self.say("The Spore Hulk bursts in a green cloud — you kept your distance.");
+            }
+        }
+
         // XP with difficulty scaling + level-ups (TS curve: xpToNext x1.48).
         let xp = crate::difficulty::scale_xp_for_difficulty(enemy.xp_reward, self.tier, self.cycle);
         let event = self.gain_xp(xp);
@@ -525,6 +629,62 @@ impl GameSession {
         self.enter_zone_at(id, entry, true)
     }
 
+    /// Dev/capture helper (debug bridge builds only): configure `town` at a
+    /// chosen population and optional completed Blacksmith lot for visual verification.
+    pub fn debug_set_town(&mut self, pop: i32, lot: Option<BlacksmithLot>) {
+        if let Some(target_lot) = lot {
+            for p in crate::town::BLACKSMITH_PIECES {
+                self.town = crate::town::record_town_item(
+                    std::mem::replace(&mut self.town, create_town_state()),
+                    p.tag,
+                );
+            }
+            self.town = crate::town::record_town_item(
+                std::mem::replace(&mut self.town, create_town_state()),
+                crate::town::STALL_ITEM_TAG,
+            );
+            for s in crate::town::TOWN_SUPPLIES {
+                self.town = crate::town::record_town_item(
+                    std::mem::replace(&mut self.town, create_town_state()),
+                    s.tag.as_str(),
+                );
+            }
+            let _ = self.complete_blacksmith(target_lot);
+        }
+        self.town.population = pop;
+        if pop > crate::town::BASE_POPULATION && self.town.returns == 0 {
+            self.town.returns = 4;
+        }
+        if self.town.blacksmith_complete {
+            let stock = crate::npcs::create_merchant_stock(
+                &mut self.id_gen,
+                &mut self.rng,
+                "blacksmith",
+                Some(&self.town),
+            );
+            self.merchant_stocks.insert("blacksmith".into(), stock);
+        }
+        let d = self.derived();
+        self.player.max_hp = d.max_hp;
+        self.player.hp = d.max_hp;
+        self.player.max_mana = d.max_mana;
+        self.player.mana = d.max_mana;
+        self.fx.clear();
+    }
+
+    fn place_companion_on_entry(&mut self, heal: bool) {
+        let (px, py) = (self.player.x, self.player.y);
+        let pos = crate::combat_turn::place_companion_near(self.zone(), px, py);
+        if let Some(c) = self.player.companion.as_mut() {
+            if heal {
+                c.hp = c.max_hp;
+                c.respawn_cooldown = 0;
+            }
+            c.x = pos.x;
+            c.y = pos.y;
+        }
+    }
+
     fn enter_zone(&mut self, id: ZoneId, down: bool) -> SessionEvent {
         self.enter_zone_at(id, None, down)
     }
@@ -555,6 +715,8 @@ impl GameSession {
         self.player.x = entry.x;
         self.player.y = entry.y;
         self.cancel_aim();
+        let heal_comp = self.in_town();
+        self.place_companion_on_entry(heal_comp);
         self.refresh_visibility();
         self.say(&format!("You enter {}.", self.zone().name));
         SessionEvent::ZoneChanged(id)
@@ -566,6 +728,8 @@ impl GameSession {
         if is_death {
             return self.wake_in_oakhaven();
         }
+        let prev_tier = crate::town::population_tier(&self.town);
+        let prev_returns = self.town.returns;
         let banked = bank_carried_town_items(
             std::mem::replace(&mut self.town, create_town_state()),
             std::mem::take(&mut self.player.inventory),
@@ -577,6 +741,26 @@ impl GameSession {
                 "Banked in Oakhaven: {}.",
                 banked.banked_tags.join(", ")
             ));
+            if banked.banked_tags.iter().any(|t| t == crate::town::STALL_ITEM_TAG) {
+                self.say("Heartcoal banked in Oakhaven! Torin's forge stall is cleared and town growth resumes.");
+            }
+            for supply in crate::town::TOWN_SUPPLIES {
+                if banked.banked_tags.iter().any(|t| t == supply.tag.as_str()) {
+                    self.say(&format!(
+                        "Banked {} in Oakhaven! +4 Population and {} unlocked at Torin's Blacksmith.",
+                        supply.name, supply.unlock_item_name
+                    ));
+                    if self.town.blacksmith_complete {
+                        let stock = crate::npcs::create_merchant_stock(
+                            &mut self.id_gen,
+                            &mut self.rng,
+                            "blacksmith",
+                            Some(&self.town),
+                        );
+                        self.merchant_stocks.insert("blacksmith".into(), stock);
+                    }
+                }
+            }
         }
         let progress = self.delve_progress;
         self.town = town_return_tick(
@@ -587,12 +771,33 @@ impl GameSession {
                 require_stall_cleared: true,
             },
         );
+        let next_tier = crate::town::population_tier(&self.town);
+        if self.town.returns > prev_returns {
+            let tier_note = if next_tier > prev_tier {
+                format!(" (Town Tier {next_tier} reached!)")
+            } else {
+                String::new()
+            };
+            self.say(&format!(
+                "Oakhaven stirs as you return — two more souls call it home. Population {}{tier_note}.",
+                self.town.population
+            ));
+        } else if progress > 0 && !self.town.stall_item_found {
+            self.say("Oakhaven's growth is stalled while Torin's forge lies cold — bring Heartcoal from Floor 1 to resume population growth.");
+        }
         self.delve_progress = 0;
         self.kills_this_delve = 0;
         self.current = ZoneId::Oakhaven;
         let spawn = self.zone().spawn_point;
         self.player.x = spawn.x;
         self.player.y = spawn.y;
+        self.place_companion_on_entry(true);
+        if next_tier > prev_tier {
+            let d = self.derived();
+            self.player.max_hp = d.max_hp;
+            self.player.max_mana = d.max_mana;
+            self.fx("town_tier_up", spawn.x, spawn.y);
+        }
         self.say("You return to Oakhaven.");
         SessionEvent::ZoneChanged(ZoneId::Oakhaven)
     }
@@ -622,9 +827,11 @@ impl GameSession {
         let spawn = self.zone().spawn_point;
         self.player.x = spawn.x;
         self.player.y = spawn.y;
-        // TS respawn reset: statuses, cooldowns and prodigy cooldowns clear.
+        self.place_companion_on_entry(true);
+        // TS respawn reset: statuses, cooldowns, haste and prodigy cooldowns clear.
         self.player.statuses.clear();
         self.player.cooldowns.clear();
+        self.player.haste_steps = Some(0);
         self.player.prodigy_cooldowns = Some(Default::default());
         self.player.first_strike_ready = true;
         self.cancel_aim();
@@ -689,14 +896,23 @@ impl GameSession {
     }
 
     pub fn complete_blacksmith(&mut self, lot: BlacksmithLot) -> bool {
+        let prev_tier = crate::town::population_tier(&self.town);
         let result = complete_blacksmith(
             std::mem::replace(&mut self.town, create_town_state()),
             lot,
         );
         self.town = result.state;
         if result.completed {
-            self.player.gold += result.wish_bonus_gold;
-            self.say("Torin's Blacksmith rises again. The rebuilt shop is open.");
+            let anchor = crate::town_layout::oakhaven_lot_anchor(lot);
+            self.fx("town_build", anchor.x.round() as i32, anchor.z.round() as i32);
+            if result.wish_bonus_gold > 0 {
+                self.player.gold += result.wish_bonus_gold;
+                self.say(&format!(
+                    "Torin presses {} gold into your hand. \"Pond air. Told you. Do NOT spend it all on draughts.\"",
+                    result.wish_bonus_gold
+                ));
+            }
+            self.say("Torin's Blacksmith rises again. The rebuilt shop is open — talk to Torin or inspect the rebuilt forge lot to browse its stock!");
             let stock = crate::npcs::create_merchant_stock(
                 &mut self.id_gen,
                 &mut self.rng,
@@ -704,6 +920,13 @@ impl GameSession {
                 Some(&self.town),
             );
             self.merchant_stocks.insert("blacksmith".into(), stock);
+            let d = self.derived();
+            self.player.max_hp = d.max_hp;
+            self.player.max_mana = d.max_mana;
+            if crate::town::population_tier(&self.town) > prev_tier {
+                let (px, py) = (self.player.x, self.player.y);
+                self.fx("town_tier_up", px, py);
+            }
         }
         result.completed
     }
@@ -715,9 +938,15 @@ impl GameSession {
         );
         let changed = result.relocated;
         self.town = result.state;
-        if result.wish_bonus_gold > 0 {
-            self.player.gold += result.wish_bonus_gold;
-            self.say("Torin's wish fulfilled: +75 gold.");
+        if changed {
+            let anchor = crate::town_layout::oakhaven_lot_anchor(lot);
+            self.fx("town_relocate", anchor.x.round() as i32, anchor.z.round() as i32);
+            if result.wish_bonus_gold > 0 {
+                self.player.gold += result.wish_bonus_gold;
+                self.say("Torin's wish fulfilled: +75 gold. \"Now that's proper air for quenching steel.\"");
+            } else {
+                self.say(&format!("Relocated the rebuilt Blacksmith to the {}.", anchor.label));
+            }
         }
         changed
     }
@@ -1260,6 +1489,7 @@ impl GameSession {
             "derived": serde_json::to_value(self.derived()).unwrap_or(Value::Null),
             "town": serde_json::to_value(&self.town).unwrap_or(Value::Null),
             "populationTier": crate::town::population_tier(&self.town),
+            "townTierBonuses": crate::town::get_town_tier_bonuses(Some(&self.town)),
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "carriedTownTags": self.carried_town_tags(),
@@ -1571,5 +1801,38 @@ mod tests {
             s.town.supplies_found
         );
         assert!(s.carried_town_tags().is_empty(), "supply left the pack");
+    }
+
+    #[test]
+    fn town_loop_rebuild_fx_and_supply_stock_refresh() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 77);
+        for p in crate::town::BLACKSMITH_PIECES {
+            s.town = crate::town::record_town_item(s.town.clone(), p.tag);
+        }
+        s.town = crate::town::record_town_item(s.town.clone(), crate::town::STALL_ITEM_TAG);
+        s.town.population = 16; // +5 on complete -> 21 (crosses Tier 1 at 20)
+
+        assert!(s.complete_blacksmith(BlacksmithLot::Pondside));
+        let cues = s.take_fx();
+        let build_cue = cues.iter().find(|c| c.kind == "town_build").expect("town_build cue");
+        let anchor = crate::town_layout::oakhaven_lot_anchor(BlacksmithLot::Pondside);
+        assert_eq!((build_cue.x, build_cue.y), (anchor.x.round() as i32, anchor.z.round() as i32));
+        assert!(cues.iter().any(|c| c.kind == "town_tier_up"), "tier 1 reached cue: {cues:?}");
+
+        // Seed initial stock before supply banking, then walk out and bank Barrow Iron.
+        assert!(!s.merchant_stock("blacksmith").iter().any(|i| i.name == "Barrow-Iron Hauberk"));
+        s.player.x = 1;
+        s.player.y = 7;
+        s.move_player(-1, 0);
+        assert_eq!(s.current, ZoneId::Overworld);
+        s.player.inventory.push(crate::world::create_quest_item_local("barrow_iron", 9999));
+        s.player.x = 1;
+        s.player.y = 12;
+        s.move_player(-1, 0);
+        assert_eq!(s.current, ZoneId::Oakhaven);
+        assert!(
+            s.merchant_stock("blacksmith").iter().any(|i| i.name == "Barrow-Iron Hauberk"),
+            "supply banked after completion refreshes cached blacksmith stock"
+        );
     }
 }

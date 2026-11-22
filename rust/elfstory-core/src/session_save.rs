@@ -43,6 +43,13 @@ pub struct SaveSummary {
     pub level: Option<i64>,
     #[serde(rename = "updatedAtMs")]
     pub updated_at_ms: Option<i64>,
+    #[serde(rename = "starterClass")]
+    pub starter_class: Option<String>,
+    /// Display label ("Story" / "Standard" / "Hardened").
+    pub difficulty: Option<&'static str>,
+    pub kills: Option<i64>,
+    #[serde(rename = "ngPlusCycle")]
+    pub ng_plus_cycle: Option<i64>,
 }
 
 impl GameSession {
@@ -138,10 +145,27 @@ impl GameSession {
         }
     }
 
+    /// Remove `slot`'s save file under `dir` (title-screen Delete).
+    /// Deleting an empty slot is a no-op.
+    pub fn delete_slot(dir: &str, slot: SaveSlotId) {
+        let mut storage = DirStorage::new(dir);
+        crate::save::SlotStorage::remove_item(&mut storage, &crate::save::get_local_slot_key(slot));
+    }
+
     /// Title-screen summary of a slot, without loading it.
     pub fn summarize_slot(dir: &str, slot: SaveSlotId) -> SaveSummary {
         let storage = DirStorage::new(dir);
-        let empty = |status, message| SaveSummary { status, message, zone: None, level: None, updated_at_ms: None };
+        let empty = |status, message| SaveSummary {
+            status,
+            message,
+            zone: None,
+            level: None,
+            updated_at_ms: None,
+            starter_class: None,
+            difficulty: None,
+            kills: None,
+            ng_plus_cycle: None,
+        };
         match read_slot_state(slot, Some(&storage)) {
             SlotReadResult::Empty => empty("empty", None),
             SlotReadResult::Corrupt { message } => empty("corrupt", Some(message)),
@@ -161,6 +185,14 @@ impl GameSession {
                     zone: Some(zone_name),
                     level: b.get("player").and_then(|p| p.get("level")).and_then(|l| l.as_i64()),
                     updated_at_ms: b.get("updatedAtMs").and_then(|v| v.as_i64()),
+                    starter_class: b
+                        .get("player")
+                        .and_then(|p| p.get("starterClass"))
+                        .and_then(|c| c.as_str())
+                        .map(str::to_string),
+                    difficulty: Some(crate::difficulty::difficulty_info(crate::save::bundle_difficulty(&b)).0),
+                    kills: b.get("player").and_then(|p| p.get("kills")).and_then(|k| k.as_i64()),
+                    ng_plus_cycle: Some(crate::save::bundle_cycle(&b) as i64),
                 }
             }
         }
@@ -170,6 +202,38 @@ impl GameSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Title screen: difficulty chosen at New Game survives save/load and
+    /// shows in the slot summary; the three slots are independent; Delete
+    /// empties only its own slot.
+    #[test]
+    fn slots_are_independent_and_carry_difficulty() {
+        let dir = scratch_dir("slots");
+        let hard = GameSession::new_game_with_difficulty("Garth", StarterClass::Shadowcraft, 5, DifficultyTier::Hardened);
+        assert_eq!(hard.tier, DifficultyTier::Hardened);
+        let story = GameSession::new_game_with_difficulty("Garth", StarterClass::Runecaster, 6, DifficultyTier::Story);
+        assert!(hard.save_to_dir(&dir, SaveSlotId::Slot2, 1000));
+        assert!(story.save_to_dir(&dir, SaveSlotId::Slot3, 2000));
+
+        assert_eq!(GameSession::summarize_slot(&dir, SaveSlotId::Slot1).status, "empty");
+        let s2 = GameSession::summarize_slot(&dir, SaveSlotId::Slot2);
+        assert_eq!(s2.status, "ok");
+        assert_eq!(s2.difficulty, Some("Hardened"));
+        assert_eq!(s2.level, Some(1));
+        assert_eq!(s2.kills, Some(0));
+        assert!(s2.starter_class.as_deref().unwrap_or("").contains("Shadowcraft"), "{:?}", s2.starter_class);
+        assert_eq!(GameSession::summarize_slot(&dir, SaveSlotId::Slot3).difficulty, Some("Story"));
+
+        let loaded = GameSession::load_from_dir(&dir, SaveSlotId::Slot2).expect("slot 2 loads");
+        assert_eq!(loaded.tier, DifficultyTier::Hardened);
+        assert_eq!(loaded.player.starter_class, StarterClass::Shadowcraft);
+
+        GameSession::delete_slot(&dir, SaveSlotId::Slot2);
+        assert_eq!(GameSession::summarize_slot(&dir, SaveSlotId::Slot2).status, "empty");
+        assert_eq!(GameSession::summarize_slot(&dir, SaveSlotId::Slot3).status, "ok");
+        GameSession::delete_slot(&dir, SaveSlotId::Slot1); // empty slot: no-op
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn scratch_dir(tag: &str) -> String {
         let d = std::env::temp_dir().join(format!("elfstory_save_test_{tag}_{}", std::process::id()));

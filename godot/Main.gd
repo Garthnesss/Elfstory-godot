@@ -52,6 +52,15 @@ const SFX := {
 	"iron_fortress": ["res://assets/audio/rpg/metalPot1.ogg", "res://assets/audio/ui/maximize_006.wav"],
 	"frost_nova": ["res://assets/audio/ui/maximize_006.wav"],
 	"shadowstep": ["res://assets/audio/rpg/cloth1.ogg"],
+	"town_build": ["res://assets/audio/ui/confirmation_004.wav", "res://assets/audio/rpg/metalPot1.ogg"],
+	"town_relocate": ["res://assets/audio/ui/confirmation_002.wav"],
+	"town_tier_up": ["res://assets/audio/ui/confirmation_004.wav"],
+	"companion": ["res://assets/audio/ui/maximize_006.wav"],
+	"companion_hit": ["res://assets/audio/rpg/knifeSlice.ogg"],
+	"deathless": ["res://assets/audio/ui/bong_001.wav"],
+	"spore_burst": ["res://assets/audio/rpg/cloth1.ogg"],
+	"boss_roar": ["res://assets/audio/ui/bong_001.wav"],
+	"haste": ["res://assets/audio/ui/maximize_006.wav"],
 	"ui_click": ["res://assets/audio/ui/click_001.wav"],
 }
 const STEP_SFX := [
@@ -112,7 +121,10 @@ var skills_box: VBoxContainer
 var aim_marker: MeshInstance3D
 var telegraph_root: Node3D
 var prompt_open := false
-var title_panel: PanelContainer
+const TitleScreen := preload("res://title_screen.gd")
+var title_screen = null # full-screen title (title_screen.gd); null once a game is picked
+var active_slot := 1 # save slot (1-3) autosave writes to
+var save_dir_override := "" # dev: --elfstory-save-dir=<abs path>
 var saving_enabled := true # off in --elfstory-capture smoke runs
 var actions_since_save := 0
 const AUTOSAVE_EVERY := 25 # forwarded actions between autosaves # the dialogue panel is showing a world-tile prompt
@@ -148,12 +160,17 @@ func _ready() -> void:
 
 	session = ElfStorySession.new()
 	session.new_game("Garth", "Vanguard", 20261120)
+	var force_title := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--elfstory-capture="):
 			saving_enabled = false # smoke runs never touch the player's save
+		elif arg == "--elfstory-show-title":
+			force_title = true # dev: capture the title screen
+		elif arg.begins_with("--elfstory-save-dir="):
+			save_dir_override = arg.trim_prefix("--elfstory-save-dir=")
 	refresh()
-	if saving_enabled:
-		show_title_if_save()
+	if saving_enabled or force_title:
+		show_title()
 	_maybe_smoke_capture()
 
 
@@ -174,6 +191,14 @@ func _maybe_smoke_capture() -> void:
 					var wy := int(parts[2]) if parts.size() > 2 else -1
 					session.debug_warp(parts[0], wx, wy)
 					camera_snapped = false
+					refresh()
+				elif a.begins_with("--elfstory-demo-town=") and session.has_method("debug_set_town"):
+					var parts := a.trim_prefix("--elfstory-demo-town=").split(",")
+					var arg_v := int(parts[0])
+					var tier_pops: Array[int] = [12, 22, 38, 58]
+					var pop: int = tier_pops[arg_v] if (arg_v >= 0 and arg_v <= 3) else arg_v
+					var lot := parts[1] if parts.size() > 1 else ""
+					session.debug_set_town(pop, lot)
 					refresh()
 			await get_tree().create_timer(2.0).timeout
 			await RenderingServer.frame_post_draw
@@ -323,9 +348,21 @@ func rebuild_world() -> void:
 	if tall_mm != null:
 		terrain_root.add_child(tall_mm)
 
+	var grass_skip := covered.duplicate()
+	if str(zone["id"]) == "oakhaven":
+		for p in placements:
+			if str(p.get("url", "")).begins_with("procedural://"):
+				var hw := float(p.get("targetWidthTiles", 2.0)) * 0.5
+				var px := float(p.get("x", 0.0))
+				var pz := float(p.get("z", 0.0))
+				for tx in range(int(floor(px - hw - 0.5)), int(ceil(px + hw + 0.5)) + 1):
+					for tz in range(int(floor(pz - hw - 0.5)), int(ceil(pz + hw + 0.5)) + 1):
+						if absf(float(tx) - px) < hw + 0.4 and absf(float(tz) - pz) < hw + 0.4:
+							grass_skip["%d,%d" % [tx, tz]] = true
+
 	build_water(tiles, is_town, covered)
 	if grass_zone:
-		var grass := Grass.build(tiles, covered)
+		var grass := Grass.build(tiles, grass_skip)
 		if grass != null:
 			terrain_root.add_child(grass)
 	# Placements are the Oakhaven town-lot models; anywhere else they'd
@@ -469,27 +506,35 @@ func build_water(tiles: Array, is_town: bool, covered: Dictionary) -> void:
 	terrain_root.add_child(node)
 
 
-## Instance each .glb placement, scaled so its footprint spans roughly
-## targetWidthTiles; fall back to a labelled placeholder box when the model
-## file is not in the project.
+## Instance each .glb placement (or procedural structure), scaled so its
+## footprint spans roughly targetWidthTiles; fall back to a labelled
+## placeholder box when a model file is missing.
 func build_landmarks(placements: Array) -> void:
 	forge_lights.clear()
 	for p in placements:
-		var fname := str(p.get("url", "")).get_file()
+		var url := str(p.get("url", ""))
+		var fname := url.get_file()
 		var target := float(p.get("targetWidthTiles", 3.0))
 		var y_off := float(p.get("yOffset", 0.0))
 		var node: Node3D = null
-		var path := "res://assets/models/" + fname
-		if fname != "" and ResourceLoader.exists(path):
-			var packed: Variant = load(path)
-			if packed != null:
-				node = packed.instantiate()
-				var aabb := scene_aabb(node)
-				var w := maxf(aabb.size.x, aabb.size.z)
-				if w > 0.01:
-					var s := target / w
-					node.scale = Vector3.ONE * s
-					y_off += -aabb.position.y * s # rest the model's base on y = 0
+		if url == "procedural://cold_forge_ruin":
+			node = make_cold_forge_ruin(target)
+		elif url == "procedural://village_cottage":
+			node = make_village_cottage(target)
+		elif url == "procedural://village_field":
+			node = make_village_field(target)
+		else:
+			var path := "res://assets/models/" + fname
+			if fname != "" and ResourceLoader.exists(path):
+				var packed: Variant = load(path)
+				if packed != null:
+					node = packed.instantiate()
+					var aabb := scene_aabb(node)
+					var w := maxf(aabb.size.x, aabb.size.z)
+					if w > 0.01:
+						var s := target / w
+						node.scale = Vector3.ONE * s
+						y_off += -aabb.position.y * s # rest the model's base on y = 0
 		if node == null:
 			node = make_placeholder(str(p.get("id", fname)), target)
 		node.position = Vector3(float(p["x"]), y_off, float(p["z"]))
@@ -515,6 +560,153 @@ func build_landmarks(placements: Array) -> void:
 			landmarks_root.add_child(omni)
 			if col == 0xff8c2b:
 				forge_lights.append(omni)
+
+	if not bool(state.get("town", {}).get("blacksmithComplete", false)):
+		build_lot_markers()
+
+
+func _add_part_box(
+	parent: Node3D,
+	size: Vector3,
+	pos: Vector3,
+	color: Color,
+	rot: Vector3 = Vector3.ZERO,
+	emission: Color = Color.BLACK,
+	metallic: float = 0.0,
+	roughness: float = 0.85
+) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = size
+	mi.mesh = box
+	mi.position = pos
+	mi.rotation = rot
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.metallic = metallic
+	mat.roughness = roughness
+	if emission != Color.BLACK:
+		mat.emission_enabled = true
+		mat.emission = emission
+		mat.emission_energy_multiplier = 1.6
+	mi.material_override = mat
+	parent.add_child(mi)
+	return mi
+
+
+func make_cold_forge_ruin(target: float) -> Node3D:
+	var root := Node3D.new()
+	var d := 2.6
+	var stone := Color(0.37, 0.35, 0.38)
+	var stone_dark := Color(0.26, 0.25, 0.28)
+	var charred := Color(0.20, 0.14, 0.10)
+	var iron := Color(0.24, 0.26, 0.29)
+	# Weathered stone foundation plinth
+	_add_part_box(root, Vector3(target, 0.14, d), Vector3(0.0, 0.07, 0.0), stone_dark)
+	# Broken back & side stone walls
+	_add_part_box(root, Vector3(target * 0.92, 0.65, 0.28), Vector3(0.0, 0.46, -d * 0.42), stone)
+	_add_part_box(root, Vector3(0.28, 0.52, d * 0.72), Vector3(-target * 0.44, 0.40, -0.1), stone)
+	_add_part_box(root, Vector3(0.28, 0.38, d * 0.52), Vector3(target * 0.44, 0.33, -0.28), stone)
+	# Cold stone forge hearth + broken chimney stump (unlit ash inside)
+	_add_part_box(root, Vector3(1.15, 0.85, 0.95), Vector3(-1.15, 0.56, -0.58), stone)
+	_add_part_box(root, Vector3(0.70, 0.65, 0.70), Vector3(-1.15, 1.30, -0.62), stone_dark)
+	_add_part_box(root, Vector3(0.60, 0.22, 0.35), Vector3(-1.15, 0.36, -0.18), Color(0.12, 0.12, 0.14))
+	# Charred timber corner posts + fallen ridge beam
+	_add_part_box(root, Vector3(0.18, 1.15, 0.18), Vector3(target * 0.38, 0.71, 0.88), charred)
+	_add_part_box(root, Vector3(0.18, 0.92, 0.18), Vector3(-target * 0.38, 0.60, 0.88), charred)
+	_add_part_box(root, Vector3(target * 0.55, 0.12, 0.14), Vector3(0.45, 0.48, 0.15), charred, Vector3(0.0, 0.22, -0.32))
+	# Cold iron anvil on weathered oak block in front
+	_add_part_box(root, Vector3(0.46, 0.34, 0.46), Vector3(0.65, 0.31, 0.55), Color(0.32, 0.22, 0.14))
+	_add_part_box(root, Vector3(0.56, 0.24, 0.28), Vector3(0.65, 0.58, 0.55), iron, Vector3.ZERO, Color.BLACK, 0.65, 0.45)
+	return root
+
+
+func make_village_cottage(target: float) -> Node3D:
+	var root := Node3D.new()
+	var w := target * 0.84
+	var d := target * 0.68
+	var stone := Color(0.46, 0.43, 0.40)
+	var plaster := Color(0.88, 0.81, 0.67)
+	var timber := Color(0.28, 0.18, 0.11)
+	var shingle := Color(0.56, 0.24, 0.16)
+	var glow := Color(1.0, 0.74, 0.30)
+	# Stone plinth >= 0.28 tall so meadow grass stays clear
+	_add_part_box(root, Vector3(target, 0.28, d + 0.24), Vector3(0.0, 0.14, 0.0), stone)
+	# Cream plaster cabin + corner timber posts
+	_add_part_box(root, Vector3(w, 0.92, d), Vector3(0.0, 0.74, 0.0), plaster)
+	for sx in [-w * 0.48, w * 0.48]:
+		for sz in [-d * 0.48, d * 0.48]:
+			_add_part_box(root, Vector3(0.14, 0.96, 0.14), Vector3(sx, 0.76, sz), timber)
+	# Pitched gable roof + ridge beam + stone chimney
+	var roof_w := target * 0.96
+	var slope_d := d * 0.68
+	_add_part_box(root, Vector3(roof_w, 0.11, slope_d), Vector3(0.0, 1.46, -d * 0.25), shingle, Vector3(0.58, 0.0, 0.0))
+	_add_part_box(root, Vector3(roof_w, 0.11, slope_d), Vector3(0.0, 1.46, d * 0.25), shingle, Vector3(-0.58, 0.0, 0.0))
+	_add_part_box(root, Vector3(roof_w + 0.08, 0.14, 0.16), Vector3(0.0, 1.74, 0.0), timber)
+	_add_part_box(root, Vector3(0.32, 0.85, 0.32), Vector3(w * 0.28, 1.62, -d * 0.18), stone)
+	# Front door + warm glowing window
+	_add_part_box(root, Vector3(0.38, 0.68, 0.08), Vector3(-w * 0.20, 0.62, d * 0.51), timber)
+	_add_part_box(root, Vector3(0.38, 0.34, 0.08), Vector3(w * 0.22, 0.76, d * 0.51), glow, Vector3.ZERO, Color(0.95, 0.65, 0.22))
+	return root
+
+
+func make_village_field(target: float) -> Node3D:
+	var root := Node3D.new()
+	var d := target * 0.82
+	var timber := Color(0.36, 0.24, 0.14)
+	var soil := Color(0.25, 0.17, 0.11)
+	var ridge := Color(0.31, 0.22, 0.14)
+	var crop_gold := Color(0.80, 0.72, 0.26)
+	var crop_leaf := Color(0.36, 0.60, 0.24)
+	# Timber raised bed frame + dark soil base
+	_add_part_box(root, Vector3(target, 0.10, d), Vector3(0.0, 0.05, 0.0), soil)
+	_add_part_box(root, Vector3(target, 0.16, 0.10), Vector3(0.0, 0.08, -d * 0.48), timber)
+	_add_part_box(root, Vector3(target, 0.16, 0.10), Vector3(0.0, 0.08, d * 0.48), timber)
+	_add_part_box(root, Vector3(0.10, 0.16, d), Vector3(-target * 0.48, 0.08, 0.0), timber)
+	_add_part_box(root, Vector3(0.10, 0.16, d), Vector3(target * 0.48, 0.08, 0.0), timber)
+	# Four tilled rows with alternating golden wheat and herb sprouts
+	for r in 4:
+		var rz := -d * 0.30 + float(r) * (d * 0.20)
+		_add_part_box(root, Vector3(target * 0.80, 0.08, 0.16), Vector3(0.0, 0.12, rz), ridge)
+		for c in 4:
+			var cx := -target * 0.30 + float(c) * (target * 0.20)
+			var col := crop_gold if (r + c) % 2 == 0 else crop_leaf
+			_add_part_box(root, Vector3(0.14, 0.24, 0.14), Vector3(cx, 0.26, rz), col)
+	return root
+
+
+func build_lot_markers() -> void:
+	var lots := [
+		{"pos": Vector3(17.5, 0.0, 13.0), "size": Vector2(3.6, 2.6), "label": "Pondside Lot ★"},
+		{"pos": Vector3(11.0, 0.0, 5.0), "size": Vector2(2.6, 2.6), "label": "Market Lot"},
+		{"pos": Vector3(4.5, 0.0, 9.5), "size": Vector2(3.2, 2.6), "label": "West Gate Lot"},
+	]
+	var stake_col := Color(0.72, 0.54, 0.24)
+	var rim_col := Color(0.92, 0.72, 0.28)
+	for entry in lots:
+		var marker := Node3D.new()
+		marker.position = entry["pos"]
+		var sz: Vector2 = entry["size"]
+		var hx := sz.x * 0.5
+		var hz := sz.y * 0.5
+		for sx in [-hx, hx]:
+			for sz_p in [-hz, hz]:
+				_add_part_box(marker, Vector3(0.12, 0.52, 0.12), Vector3(sx, 0.26, sz_p), stake_col)
+		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, -hz), rim_col)
+		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, hz), rim_col)
+		_add_part_box(marker, Vector3(0.07, 0.06, sz.y), Vector3(-hx, 0.05, 0.0), rim_col)
+		_add_part_box(marker, Vector3(0.07, 0.06, sz.y), Vector3(hx, 0.05, 0.0), rim_col)
+		var lbl := Label3D.new()
+		lbl.text = str(entry["label"])
+		lbl.font_size = 44
+		lbl.pixel_size = 0.007
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.modulate = Color(1.0, 0.88, 0.52)
+		lbl.outline_size = 8
+		lbl.outline_modulate = Color(0.08, 0.07, 0.05)
+		lbl.position = Vector3(0.0, 1.85, 0.0)
+		marker.add_child(lbl)
+		landmarks_root.add_child(marker)
 
 
 func make_placeholder(label_text: String, target: float) -> Node3D:
@@ -584,6 +776,14 @@ func refresh_entities() -> void:
 
 	player_node = make_capsule(Color(0.30, 0.55, 1.00), 1.0)
 	add_entity("player", player_node, Vector3(float(pl["x"]), 0.0, float(pl["y"])), prev)
+
+	var comp = pl.get("companion")
+	if comp is Dictionary and int(comp.get("hp", 0)) > 0 and int(comp.get("respawnCooldown", 0)) == 0:
+		var ckind := str(comp.get("kind", ""))
+		var ccol := Color(0.45, 0.72, 1.00) if ckind == "starlight_owl" else Color(0.22, 0.86, 0.78)
+		var cn := make_capsule(ccol, 0.72)
+		add_label(cn, str(comp.get("name", "Companion")))
+		add_entity("companion", cn, Vector3(float(comp["x"]), 0.0, float(comp["y"])), prev)
 
 	for e in zone.get("enemies", []):
 		var boss := bool(e.get("isBoss", false))
@@ -691,7 +891,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		var k := event as InputEventKey
 		if not k.pressed or k.echo:
 			return
-		if title_panel != null:
+		if title_screen != null:
 			return # Continue / New Game first
 		match k.physical_keycode:
 			KEY_V:
@@ -764,7 +964,7 @@ func key_dir(k: int) -> Vector2i:
 ## Held-key walking: poll the same key set every MOVE_REPEAT seconds.
 func update_held_movement(delta: float) -> void:
 	move_timer -= delta
-	if move_timer > 0.0 or title_panel != null or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
+	if move_timer > 0.0 or title_screen != null or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
 		return
 	var held := Vector2i.ZERO
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
@@ -832,13 +1032,19 @@ func build_ui() -> void:
 	town_panel = make_panel()
 	town_panel.anchor_left = 1.0
 	town_panel.anchor_right = 1.0
-	town_panel.offset_left = -272
+	town_panel.offset_left = -330
 	town_panel.offset_right = -10
 	town_panel.offset_top = 10
-	town_panel.offset_bottom = 340
+	town_panel.offset_bottom = 480
 	layer.add_child(town_panel)
+	var town_scroll := ScrollContainer.new()
+	town_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	town_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	town_panel.add_child(town_scroll)
 	town_box = VBoxContainer.new()
-	town_panel.add_child(town_box)
+	town_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	town_box.add_theme_constant_override("separation", 4)
+	town_scroll.add_child(town_box)
 
 	# Dialogue panel, bottom-centre.
 	dialogue_panel = make_panel()
@@ -965,6 +1171,14 @@ func update_hud() -> void:
 		sts.append("%s %dt" % [str(st["kind"]).capitalize(), int(st["turns"])])
 	if not sts.is_empty():
 		hud_body.text += "\n" + " · ".join(sts)
+	var comp = pl.get("companion")
+	if comp is Dictionary:
+		var cname := str(comp.get("name", "Companion"))
+		var cd := int(comp.get("respawnCooldown", 0))
+		if cd > 0:
+			hud_body.text += "\n%s: reforming (%dt)" % [cname, cd]
+		else:
+			hud_body.text += "\n%s %d/%d HP" % [cname, int(comp.get("hp", 0)), int(comp.get("maxHp", 0))]
 	if int(pl.get("skillPoints", 0)) > 0:
 		hud_body.text += "\n%d skill point(s) — press K" % int(pl["skillPoints"])
 
@@ -994,47 +1208,139 @@ func rebuild_town_panel() -> void:
 	var town: Dictionary = state.get("town", {})
 	var pieces: Array = town.get("piecesFound", [])
 	var supplies: Array = town.get("suppliesFound", [])
+	var tier := int(state.get("populationTier", 0))
+	var pop := int(town.get("population", 0))
+	var returns := int(town.get("returns", 0))
+	var stall_cleared := bool(town.get("stallItemFound", false))
 
 	var head := make_label()
-	head.add_theme_font_size_override("font_size", 16)
-	head.text = "— Town —"
+	head.add_theme_font_size_override("font_size", 15)
+	head.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
+	head.text = "Oakhaven — Town & Forge"
 	town_box.add_child(head)
 
-	var lines := make_label()
-	var wish := "done" if bool(town.get("wishSatisfied", false)) else "pending"
-	lines.text = "Pieces: %d/3\nWish: %s\nPopulation: %d (Tier %d)" % [
-		pieces.size(), wish,
-		int(town.get("population", 0)), int(state.get("populationTier", 0)),
+	var summary := make_label()
+	summary.add_theme_font_size_override("font_size", 12)
+	summary.text = "Pieces %d/3 · Pop %d (Tier %d) · Returns %d" % [pieces.size(), pop, tier, returns]
+	town_box.add_child(summary)
+
+	var bonuses: Dictionary = state.get("townTierBonuses", {})
+	var bonus_l := make_label()
+	bonus_l.add_theme_font_size_override("font_size", 12)
+	if tier > 0:
+		var def_txt := " · +%d DEF" % int(bonuses.get("def", 0)) if int(bonuses.get("def", 0)) > 0 else ""
+		bonus_l.text = "Tier %d Bonus: +%d HP · +%d ATK · +%d Spell%s" % [
+			tier, int(bonuses.get("maxHp", 0)), int(bonuses.get("atk", 0)), int(bonuses.get("spellPower", 0)), def_txt]
+		bonus_l.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
+	else:
+		bonus_l.text = "Next tier at Pop 20 (+HP/ATK/Spell & village growth)"
+		bonus_l.add_theme_color_override("font_color", Color(0.72, 0.76, 0.82))
+	bonus_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	town_box.add_child(bonus_l)
+
+	# Forge pieces + Heartcoal stall checklist
+	var piece_defs := [
+		["blacksmith_anvil", "Torin's Lost Anvil"],
+		["blacksmith_bellows", "Great Forge Bellows"],
+		["blacksmith_sign", "The Smith's Hanging Sign"],
 	]
-	if not supplies.is_empty():
-		lines.text += "\nSupplies: " + join_strs(supplies)
-	town_box.add_child(lines)
+	for pd in piece_defs:
+		var has_p := pieces.has(pd[0])
+		var pl := make_label()
+		pl.add_theme_font_size_override("font_size", 12)
+		pl.text = "%s %s" % ["✓" if has_p else "○", pd[1]]
+		pl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_p else Color(0.66, 0.70, 0.76))
+		town_box.add_child(pl)
+
+	var stall_l := make_label()
+	stall_l.add_theme_font_size_override("font_size", 12)
+	stall_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if stall_cleared:
+		stall_l.text = "✓ Heartcoal — forge lit (growth active)"
+		stall_l.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
+	else:
+		stall_l.text = "✕ Heartcoal — STALLED (growth frozen)"
+		stall_l.add_theme_color_override("font_color", Color(0.95, 0.56, 0.54))
+	town_box.add_child(stall_l)
 
 	var carried: Array = state.get("carriedTownTags", [])
 	if not carried.is_empty():
 		var c := make_label()
-		c.text = "Carrying: " + join_strs(carried)
+		c.add_theme_font_size_override("font_size", 12)
+		c.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		c.text = "Carrying (bank on return): " + join_strs(carried)
+		c.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
 		town_box.add_child(c)
 
+	var wish_l := make_label()
+	wish_l.add_theme_font_size_override("font_size", 11)
+	wish_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	wish_l.text = "Torin's wish: Pondside Lot (+75g bonus, relocate free anytime)"
+	wish_l.add_theme_color_override("font_color", Color(0.65, 0.82, 0.96))
+	town_box.add_child(wish_l)
+
+	var lot_labels := {
+		"pondside": "Pondside Lot",
+		"market": "Market Green Lot",
+		"west_gate": "West Gate Lot",
+	}
 	if bool(state.get("canCompleteBlacksmith", false)):
 		var hint := make_label()
-		hint.text = "Torin's forge can be rebuilt:"
+		hint.add_theme_font_size_override("font_size", 12)
+		hint.text = "Ready! Choose a lot to rebuild:"
+		hint.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
 		town_box.add_child(hint)
 		for lot in LOTS:
-			var b := make_button("Build: " + lot)
+			var label := str(lot_labels.get(lot, lot))
+			if lot == "pondside":
+				label += " ★ (+75g wish)"
+			var b := make_button("Build: " + label)
+			b.add_theme_font_size_override("font_size", 12)
 			b.pressed.connect(_on_complete_blacksmith.bind(lot))
 			town_box.add_child(b)
 	elif bool(town.get("blacksmithComplete", false)):
 		var cur := str(town.get("blacksmithLot", ""))
 		var at := make_label()
-		at.text = "Forge standing: " + cur
+		at.add_theme_font_size_override("font_size", 12)
+		at.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var wish_note := " (wish met)" if bool(town.get("wishSatisfied", false)) else ""
+		at.text = "Forge standing: %s%s" % [str(lot_labels.get(cur, cur)), wish_note]
+		at.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
 		town_box.add_child(at)
+		var shop_btn := make_button("Open Blacksmith Shop")
+		shop_btn.add_theme_font_size_override("font_size", 13)
+		shop_btn.pressed.connect(func() -> void: open_merchant("blacksmith"))
+		town_box.add_child(shop_btn)
+		var bonus_claimed := bool(town.get("wishBonusClaimed", false))
 		for lot in LOTS:
 			if lot == cur:
 				continue
-			var b := make_button("Relocate: " + lot)
+			var label := str(lot_labels.get(lot, lot))
+			if lot == "pondside" and not bonus_claimed:
+				label += " (+75g wish)"
+			var b := make_button("Relocate: " + label)
+			b.add_theme_font_size_override("font_size", 12)
 			b.pressed.connect(_on_relocate_blacksmith.bind(lot))
 			town_box.add_child(b)
+
+	var sup_head := make_label()
+	sup_head.add_theme_font_size_override("font_size", 12)
+	sup_head.text = "Regional Supplies (side branches):"
+	sup_head.add_theme_color_override("font_color", Color(0.95, 0.82, 0.50))
+	town_box.add_child(sup_head)
+	var supply_defs := [
+		["barrow_iron", "Barrow Iron (Barrow Fl.1 → Hauberk)"],
+		["mire_timber", "Mire Timber (Fungal Fl.1 → Greatbow)"],
+		["frost_coal", "Frost White-Coal (Frost Fl.1 → Greathelm)"],
+	]
+	for sd in supply_defs:
+		var has_s := supplies.has(sd[0])
+		var sl := make_label()
+		sl.add_theme_font_size_override("font_size", 11)
+		sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sl.text = "%s %s" % ["✓" if has_s else "○", sd[1]]
+		sl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_s else Color(0.68, 0.72, 0.78))
+		town_box.add_child(sl)
 
 
 func _on_complete_blacksmith(lot: String) -> void:
@@ -1241,6 +1547,28 @@ func play_fx() -> void:
 				spawn_sparkle(at, 1.0)
 			"level_up":
 				spawn_sparkle(at, 1.6)
+			"town_build":
+				spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.4)
+				spawn_sparkle(at, 2.0)
+				spawn_sparkle(at + Vector3(-0.9, 0.3, 0.4), 1.5)
+				spawn_sparkle(at + Vector3(0.9, 0.3, -0.4), 1.5)
+			"town_relocate":
+				spawn_sparkle(at, 1.8)
+			"town_tier_up":
+				spawn_sparkle(at, 2.2)
+			"companion", "haste":
+				spawn_sparkle(at, 1.0)
+			"companion_hit":
+				if dir.length() > 0.0:
+					var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
+					var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
+					swing.scale = Vector3.ONE * (SLASH_SCALE * 0.8)
+				spawn_vfx(VFX_HIT, at, 0.85)
+			"deathless", "boss_roar":
+				spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.0)
+				spawn_sparkle(at, 1.4)
+			"spore_burst":
+				spawn_vfx(VFX_HIT, at, 2.2)
 		play_sfx(kind)
 
 
@@ -1422,18 +1750,20 @@ func rebuild_skills_panel() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Save / continue (single slot; rules + format in session_save.rs)
+# Save / continue (slots 1-3; rules + format in session_save.rs)
 # ---------------------------------------------------------------------------
 
 func save_dir() -> String:
+	if save_dir_override != "":
+		return save_dir_override
 	return OS.get_user_data_dir().path_join("saves")
 
 
 func autosave() -> void:
-	if not saving_enabled or title_panel != null:
+	if not saving_enabled or title_screen != null:
 		return # nothing to save before the player picks Continue / New Game
 	actions_since_save = 0
-	if not session.save_game(save_dir()):
+	if not session.save_game(save_dir(), active_slot):
 		push_warning("ElfStory: autosave failed (%s)" % save_dir())
 
 
@@ -1442,71 +1772,50 @@ func _notification(what: int) -> void:
 		autosave()
 
 
-## On launch: if slot 1 holds a game, offer Continue / New Game over the
-## fresh town; unreadable saves are explained, never silently replaced.
-func show_title_if_save() -> void:
-	var parsed: Variant = JSON.parse_string(session.save_summary_json(save_dir()))
-	if not (parsed is Dictionary):
-		return
-	var sum: Dictionary = parsed
-	var status := str(sum.get("status", "empty"))
-	if status == "empty":
-		return
-	title_panel = make_panel()
-	title_panel.anchor_left = 0.5
-	title_panel.anchor_right = 0.5
-	title_panel.anchor_top = 0.5
-	title_panel.anchor_bottom = 0.5
-	title_panel.offset_left = -220
-	title_panel.offset_right = 220
-	title_panel.offset_top = -85
-	title_panel.offset_bottom = 70
-	hud_title.get_parent().get_parent().get_parent().add_child(title_panel) # the UI CanvasLayer
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 10)
-	title_panel.add_child(box)
-	var head := make_label()
-	head.add_theme_font_size_override("font_size", 22)
-	head.text = "ElfStory"
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(head)
-	if status == "ok":
-		var cont := make_button("Continue — %s, level %d" % [str(sum.get("zone", "?")), int(sum.get("level", 1))])
-		cont.pressed.connect(_on_title_continue)
-		box.add_child(cont)
-		var note := make_label()
-		note.text = "New Game replaces this save at the next autosave."
-		note.add_theme_font_size_override("font_size", 12)
-		box.add_child(note)
-	else:
-		var msg := make_label()
-		msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		msg.custom_minimum_size = Vector2(400, 0)
-		msg.text = str(sum.get("message", "This save can't be loaded."))
-		box.add_child(msg)
-	var fresh := make_button("New Game")
-	fresh.pressed.connect(_on_title_new_game)
-	box.add_child(fresh)
+## On launch: the full-screen title (title_screen.gd) over the idle town.
+## Picking New Adventure or Continue hands the game over and closes it.
+func show_title() -> void:
+	title_screen = TitleScreen.new()
+	title_screen.setup(session, save_dir())
+	title_screen.start_new.connect(_on_title_start_new)
+	title_screen.continue_slot.connect(_on_title_continue)
+	title_screen.ui_click.connect(play_sfx.bind("ui_click"))
+	var layer := CanvasLayer.new()
+	layer.name = "Title"
+	layer.layer = 10 # above the HUD
+	layer.add_child(title_screen)
+	add_child(layer)
 
 
-func _on_title_continue() -> void:
-	var res: String = session.load_game(save_dir())
+func _on_title_start_new(slot: int, starter_class: String, difficulty: String) -> void:
+	var seed := int(Time.get_unix_time_from_system()) & 0x7fffffff
+	session.new_game_with_difficulty("Garth", starter_class, seed, difficulty)
+	active_slot = slot
 	close_title()
+	reset_view()
+	autosave() # the slot shows the new adventure straight away
+
+
+func _on_title_continue(slot: int) -> void:
+	var res: String = session.load_game(save_dir(), slot)
 	if res != "ok":
-		push_warning("ElfStory: load failed: " + res)
-	current_zone_id = "" # force a full rebuild for the loaded zone
-	current_build_key = ""
-	refresh()
-
-
-func _on_title_new_game() -> void:
+		title_screen.show_slot_error(slot, res)
+		return
+	active_slot = slot
 	close_title()
-	autosave()
+	reset_view()
+
+
+## A different game is now in the session: rebuild everything for it.
+func reset_view() -> void:
+	current_zone_id = ""
+	current_build_key = ""
+	camera_snapped = false
+	actions_since_save = 0
 	refresh()
 
 
 func close_title() -> void:
-	if title_panel != null:
-		title_panel.queue_free()
-		title_panel = null
-
+	if title_screen != null:
+		title_screen.get_parent().queue_free() # its CanvasLayer
+		title_screen = null

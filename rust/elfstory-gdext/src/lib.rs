@@ -13,6 +13,15 @@ struct ElfStoryExtension;
 #[gdextension]
 unsafe impl ExtensionLibrary for ElfStoryExtension {}
 
+/// Title-screen slot number (1-3) to a core slot id; out of range is slot 1.
+fn slot_id(n: i32) -> SaveSlotId {
+    match n {
+        2 => SaveSlotId::Slot2,
+        3 => SaveSlotId::Slot3,
+        _ => SaveSlotId::Slot1,
+    }
+}
+
 fn parse_class(s: &str) -> StarterClass {
     match s {
         "Shadowcraft" => StarterClass::Shadowcraft,
@@ -64,6 +73,19 @@ impl ElfStorySession {
             &name.to_string(),
             parse_class(&starter_class.to_string()),
             seed as u32,
+        ));
+    }
+
+    /// New game with a difficulty id ("story" / "standard" / "hardened";
+    /// anything else is Standard).
+    #[func]
+    fn new_game_with_difficulty(&mut self, name: GString, starter_class: GString, seed: i64, difficulty: GString) {
+        let tier = elfstory_core::difficulty::normalize_difficulty(Some(&difficulty.to_string().to_lowercase()));
+        self.inner = Some(GameSession::new_game_with_difficulty(
+            &name.to_string(),
+            parse_class(&starter_class.to_string()),
+            seed as u32,
+            tier,
         ));
     }
 
@@ -184,26 +206,26 @@ impl ElfStorySession {
         }
     }
 
-    // ---- save / continue (session_save.rs), single slot for now ----
+    // ---- save / continue (session_save.rs), slots 1-3 ----
 
-    /// Save the current game to slot 1 under `dir` (absolute path).
+    /// Save the current game to `slot` (1-3) under `dir` (absolute path).
     #[func]
-    fn save_game(&mut self, dir: GString) -> bool {
+    fn save_game(&mut self, dir: GString, slot: i32) -> bool {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         match &self.inner {
-            Some(s) => s.save_to_dir(&dir.to_string(), SaveSlotId::Slot1, now_ms),
+            Some(s) => s.save_to_dir(&dir.to_string(), slot_id(slot), now_ms),
             None => false,
         }
     }
 
-    /// Load slot 1 from `dir`, replacing the current game. Returns "ok" or
-    /// the reason it can't load (the current game is kept on failure).
+    /// Load `slot` (1-3) from `dir`, replacing the current game. Returns
+    /// "ok" or the reason it can't load (the current game is kept on failure).
     #[func]
-    fn load_game(&mut self, dir: GString) -> GString {
-        match GameSession::load_from_dir(&dir.to_string(), SaveSlotId::Slot1) {
+    fn load_game(&mut self, dir: GString, slot: i32) -> GString {
+        match GameSession::load_from_dir(&dir.to_string(), slot_id(slot)) {
             Ok(s) => {
                 self.inner = Some(s);
                 GString::from("ok")
@@ -212,11 +234,18 @@ impl ElfStorySession {
         }
     }
 
-    /// {status: empty|ok|corrupt|future|dead, message, zone, level, updatedAtMs}
+    /// {status: empty|ok|corrupt|future|dead, message, zone, level,
+    /// updatedAtMs, starterClass, difficulty, kills, ngPlusCycle}
     #[func]
-    fn save_summary_json(&self, dir: GString) -> GString {
-        let sum = GameSession::summarize_slot(&dir.to_string(), SaveSlotId::Slot1);
+    fn save_summary_json(&self, dir: GString, slot: i32) -> GString {
+        let sum = GameSession::summarize_slot(&dir.to_string(), slot_id(slot));
         GString::from(&serde_json::to_string(&sum).unwrap_or_else(|_| "null".into()))
+    }
+
+    /// Delete `slot`'s save file (title-screen Delete, after confirmation).
+    #[func]
+    fn delete_slot(&mut self, dir: GString, slot: i32) {
+        GameSession::delete_slot(&dir.to_string(), slot_id(slot));
     }
 
     // ---- skills / combat (combat_turn.rs) ----
@@ -311,6 +340,17 @@ impl ElfStorySession {
         match &mut self.inner {
             Some(s) => GString::from(&event_name(s.debug_warp(id, x, y))),
             None => GString::from("none"),
+        }
+    }
+
+    /// Dev/capture only (debug builds): set town population and optionally
+    /// complete the Blacksmith on `lot` ("pondside" / "market" / "west_gate").
+    #[cfg(debug_assertions)]
+    #[func]
+    fn debug_set_town(&mut self, pop: i32, complete_lot: GString) {
+        if let Some(s) = &mut self.inner {
+            let lot = BlacksmithLot::parse(&complete_lot.to_string());
+            s.debug_set_town(pop, lot);
         }
     }
 

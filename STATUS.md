@@ -271,3 +271,36 @@ and glTF inspection rather than assumed:
 - **New tool `tools/blender_decimate_source.py`:** welded-vertex import → Collapse decimate (UV-delimited) → smooth-by-angle 35° → bottom-center origin → optional `--rebake` onto fresh Smart UVs. Route notes are in `docs/asset-generation-pipeline.md`.
 - **Gate:** routes compared side by side against the source (decimation at 8/15/25/35%, welded vs unwelded, 12k-quad retopo, 1024 vs 2048 bake). Two adversarial review rounds. Garth approved shipping with the watertight exception and the accepted close-zoom flaws recorded in `tools/ASSET_GATE.md`. The platypus appears at Population Tier 2. It was checked in-game with a temporary placement and camera, and nothing from that patch was committed.
 - **Verified:** clean Godot re-import, and the headless RUN1 check is OK.
+
+## Title screen, 3 save slots, difficulty & app icon (Nov 22, 2026)
+
+- **Core (`session.rs`, `session_save.rs`):** `GameSession::new_game_with_difficulty` creates runs at Story / Standard / Hardened (`DifficultyTier`); `GameSession::delete_slot` removes a slot's save file cleanly (no-op on empty slots); `SaveSummary` includes `starterClass`, `difficulty`, `kills`, and `ngPlusCycle`.
+- **Bridge (`elfstory-gdext/src/lib.rs`):** added `new_game_with_difficulty` and `delete_slot`; made `save_game`, `load_game`, and `save_summary_json` slot-aware (`1..=3` via `slot_id`).
+- **Godot (`title_screen.gd`, `Main.gd`):** full-screen title overlay over `title_crypt_backdrop_1794536484639.jpg` with discipline picker (Vanguard / Shadowcraft / Runecaster / Wanderer), difficulty selector (Story / Standard / Hardened), 3 independent save slot cards (`Continue`, two-click `Delete` confirmation, and two-click `Replace Slot N?` confirmation before overwriting an occupied slot), plus dev capture flags `--elfstory-show-title` and `--elfstory-save-dir=`.
+- **App icon:** added `godot/assets/icon/elfstory_icon.png` wired into `godot/project.godot` (`config/icon`) and `godot/export_presets.cfg` (`application/icon`).
+- **Verified:** `cargo test` **102/102** (including `slots_are_independent_and_carry_difficulty`), `cargo build`, Godot headless `run1_check.gd` (`RUN1_CHECK_OK`, extended with slot & difficulty bridge checks), and `tools/build_app.sh --smoke` (`ELFSTORY_CAPTURE .../build/smoke.png err=0`).
+
+## Town loop feel — cold forge ruin, lot rebuild moment & ActRaiser growth (Nov 22, 2026)
+
+- **Core (`town_layout.rs`, `session.rs`):**
+  - Before `blacksmith_complete`, `landmark:torin_forge` renders as `procedural://cold_forge_ruin` at `(7, 2)` instead of a pre-built glowing forge, so rebuilding on a chosen lot is a real visual transformation.
+  - Added visible ActRaiser village growth structures per Population Tier (`20/35/55`): Tier 1 (`tier1_west_arbor` + `tier1_garden_field`), Tier 2 (`tier2_pond_totem` platypus + `tier2_settler_cottage`), and Tier 3 (`tier3_east_grove` + `tier3_east_cottage` + `tier3_harvest_field`), placed on verified conflict-free meadow tiles.
+  - `complete_blacksmith`, `relocate_blacksmith`, and `return_to_oakhaven` now emit `town_build`, `town_relocate`, and `town_tier_up` FX cues, log TS-matched stall/supply/tier-up messages, refresh player derived HP/MP when a tier rises, and refresh cached `blacksmith` merchant stock when regional supplies are banked post-completion. `state_json()` now exposes `townTierBonuses`.
+- **Godot (`Main.gd`, `lib.rs`):**
+  - Added procedural 3D builders (`make_cold_forge_ruin`, `make_village_cottage`, `make_village_field`), pre-rebuild candidate lot markers (`build_lot_markers`), grass-skip logic under procedural structures, celebration VFX/SFX for `town_build` / `town_relocate` / `town_tier_up`, and an upgraded `TownPanel` showing tier bonuses, piece/Heartcoal checklists, wish hint, lot build/relocate controls, `Open Blacksmith Shop`, and regional supply tracking.
+  - Added debug-only `debug_set_town` bridge + `--elfstory-demo-town=<tier>,<lot>` capture flag.
+- **Verified:** `cargo test` **103/103** (new `town_loop_rebuild_fx_and_supply_stock_refresh` + updated `tier_growth_placements_follow_population_tier`), `cargo build`, Godot headless `run1_check.gd` (`RUN1_CHECK_OK`) + 30-frame `Main.tscn`, Tier 0 and Tier 3 Oakhaven captures reviewed via `read_file`, and `tools/build_app.sh --smoke` (`ELFSTORY_CAPTURE .../build/smoke.png err=0`).
+
+## Remaining combat gaps closed (Nov 22, 2026)
+
+- **Spirit Companions (`combat_turn.rs`, `session.rs`, `Main.gd`):**
+  - `new_game` bonds `Starlight Owl` for Runecaster (`+1` sight radius to 9, passive mana trickle, +1 MP on hit) or `Silverwind Lynx` for other classes (20% crit pounce, periodic `+2` heal).
+  - Companion HP scales on level-up; heals and reforms when entering town or resting 8 turns after collapse; pursues visible/alerted foes within leash 6, attacks adjacent enemies, absorbs enemy strikes when adjacent, and swaps tiles cleanly when stepped onto outside town.
+  - `Main.gd` renders the companion capsule + label and shows companion HP / reform timer in the HUD.
+- **Enemy Death Quirks (`session.rs`):**
+  - `GraveHusk` triggers "Deathless" once per enemy, reviving in place at 30% HP with no kill credit or loot (`deathless` FX cue).
+  - `SporeHulk` detonates on death (`spore_burst` FX cue), dealing `6 + depth*2` damage and Poison (3t) to point-blank killers (`check_player_fatal` handles Cauterize/death).
+- **Boss Confrontation Prompts & Haste (`world_interact.rs`, `combat_turn.rs`, `session.rs`):**
+  - `PromptKind::BossConfrontation` triggers pre-fight confrontation modals for Vaelen, Serath, and Malakor (each with attribute-gated options and one-time sighting per archetype) plus Mini-Boss Warden sightings (`boss_roar` FX cue).
+  - `after_step_on_tile` consumes `haste_steps` for free movement without advancing enemy turns (`haste` FX cue), cleared on `wake_in_oakhaven`.
+- **Verified:** `cargo test` **107/107** (4 new tests: `companion_fights_heals_swaps_and_reforms`, `grave_husk_revives_once_and_spore_hulk_bursts_adjacent`, `boss_confrontation_prompts_trigger_once_and_resolve`, `haste_steps_grant_free_moves_without_enemy_turn`), `cargo build`, Godot headless `run1_check.gd` (`RUN1_CHECK_OK`), 30-frame `Main.tscn`, and `tools/build_app.sh --smoke`.

@@ -34,7 +34,7 @@ Port the vertical slice from `/Users/gerth/Projects/elfstoryreborn/src/game/` in
 - [x] Port `overworld`, `highspire`, `thornwick`, `cinderwatch`, `dungeon_2..5`, `barrow_1..2`, `mire_1..2`, `frost_1..3`, and Endless Abyss (`dungeon_6+`) with regional town supplies on `barrow_1` / `mire_1` / `frost_1`.
 - [x] Port all 18 NPCs, comedy-tone dialogue/barks (`garthVoice`), 10 quests, set-piece rooms, 17 enemy archetypes, companions, difficulty tiers, Hardcore, NG+ ascension (preserving `blacksmith` stock), and gamepad navigation.
 - [x] World session behaviors: vault door, Seal Brazier hall, waystone attunement, chests (ordinary / vault / boss hoard / satchel), restorative braziers (Nov 21).
-- [x] Skills in combat (Nov 21): 8 actives + passives + prodigy hooks, aiming/hotbar/learning, and the TS enemy turn (statuses, DoTs, dodge, intents). Not yet: companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste.
+- [x] Skills in combat (Nov 21–22): 8 actives + passives + prodigy hooks, aiming/hotbar/learning, TS enemy turn (statuses, DoTs, dodge, intents), Spirit Companions (Silverwind Lynx / Starlight Owl), Grave Husk Deathless & Spore Hulk burst, boss confrontation prompts (Vaelen / Serath / Malakor), and haste steps.
 - [x] Native macOS `.app` export (Nov 21): `tools/build_app.sh` → `build/ElfStory.app` (universal, ad-hoc signed, not notarized).
 - [ ] Remaining procedural boxes in Oakhaven (cottages/stalls) — style follows the Nov 21 textured-source direction in `tools/ASSET_GATE.md`, not flat Track A.
 
@@ -49,6 +49,6 @@ Full survey and reasoning: `docs/godot-asset-library-shortlist.md`. Every visual
 Garth picked all four; take them in this order unless he says otherwise:
 1. [x] **Grass & foliage** — done Nov 21: in-house meadow grass + wildflowers (`godot/grass.gd`, `grass.gdshader`) over Oakhaven + Silverwood Vale floor tiles; no add-on needed. Approved by Garth after two review rounds.
 2. [x] **Platypus feet** — done Nov 21: rebuilt from the TRELLIS source (welded 25% decimation + Smart-UV re-bake, `tools/blender_decimate_source.py --rebake`); toes, webbing and claws restored. Garth shipped it with the watertight exception.
-3. [ ] **Title & save slots** — real title screen, 3 save slots (core already supports them), difficulty choice (Story / Standard / Hardened) at New Game, app icon.
-4. [ ] **Town loop feel** — ActRaiser growth visible in Oakhaven (houses/fields appearing per Population Tier) and the rebuilt-Blacksmith moment on its chosen lot.
-Also open: remaining combat gaps (companions, Grave Husk / Spore Hulk death quirks, boss confrontation prompts, haste); Garth's playtest notes from the app.
+3. [x] **Title & save slots** — done Nov 22: full-screen title (`godot/title_screen.gd`) over crypt backdrop, 3 independent save slots with Continue / two-click Delete & overwrite confirmation, starting discipline + difficulty choice (Story / Standard / Hardened via `new_game_with_difficulty`), and app icon (`godot/assets/icon/elfstory_icon.png`).
+4. [x] **Town loop feel** — done Nov 22: cold forge ruin at `(7, 2)` and marked build lots before completion, rebuilt `blacksmith.glb` + build/tier-up celebration VFX/SFX on chosen lot, visible Tier 1–3 ActRaiser growth structures (gardens, settler cottages, arbor, platypus, grove), regional supply shop refresh on banking, and upgraded `TownPanel`.
+Also open: Garth's playtest notes from the app (all 4 combat gaps closed Nov 22).
