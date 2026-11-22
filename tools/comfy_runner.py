@@ -398,6 +398,14 @@ def _start_comfy_server():
 
 
 def main():
+    # Machine-wide generation queue (tools/genq.py): one ComfyUI/TRELLIS job
+    # at a time across every AI session. Re-enter through the queue unless
+    # genq already gave us the slot.
+    genq = Path(__file__).resolve().parent / "genq.py"
+    if not os.environ.get("GENQ_SLOT") and genq.is_file() and "--free-only" not in sys.argv:
+        label = "comfy_runner " + " ".join(sys.argv[1:])[:70]
+        os.execv(sys.executable, [sys.executable, str(genq), "run", "--label", label, "--",
+                                  sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
     p = argparse.ArgumentParser(description="Run local ComfyUI for ElfStory Reborn V2 assets.")
     p.add_argument("--mode", choices=["concept", "pbr-texture", "texture", "refine-texture"], default="concept")
     p.add_argument("--prompt", default="", help="Subject or material description")
@@ -411,7 +419,8 @@ def main():
     p.add_argument("--steps", type=int, default=4, help="Sampler steps (default: 4 for SDXL Turbo at 1024px)")
     p.add_argument("--cfg", type=float, default=1.35, help="CFG scale (default: 1.35 for SDXL Turbo at 1024px)")
     p.add_argument("--seed", type=int, default=-1)
-    p.add_argument("--no-delight", action="store_true", help="Skip automatic concept delighting pass")
+    p.add_argument("--delight", action="store_true", help="Run the automatic concept delighting pass (OFF by default since Nov 22, 2026: the pass caused white smears on concepts, e.g. the first blight rat and likely the lynx cheek flecks)")
+    p.add_argument("--no-delight", action="store_true", help="(compat) Delighting is off by default; this flag is a no-op")
     p.add_argument("--keep-running", action="store_true", help="Leave ComfyUI running after generation")
     p.add_argument("--keep-studio", action="store_true", help="Stay in STUDIO mode after generation")
     p.add_argument("--no-mode", action="store_true", help="Skip elfmode STUDIO/AGENT flip")
@@ -539,7 +548,7 @@ def main():
             out_path.write_bytes(r.read())
 
         pbr_maps = None
-        if args.mode == "concept" and not args.no_delight:
+        if args.mode == "concept" and args.delight and not args.no_delight:
             delight_concept_image(out_path)
         elif args.mode in ("pbr-texture", "texture"):
             pbr_maps = make_seamless_and_derive_pbr_maps(out_path)
@@ -553,7 +562,7 @@ def main():
             "seed": seed,
             "width": args.width,
             "height": args.height,
-            "delighted": args.mode == "concept" and not args.no_delight,
+            "delighted": args.mode == "concept" and args.delight and not args.no_delight,
             "elapsed_s": round(elapsed, 2),
             "size_kb": round(size_kb, 1),
             "output": str(out_path),

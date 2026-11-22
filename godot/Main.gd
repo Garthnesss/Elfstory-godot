@@ -896,29 +896,33 @@ func refresh_entities() -> void:
 	var seen := {}
 
 	player_node = _sync_actor(seen, "player", Vector3(float(pl["x"]), 0.0, float(pl["y"])), int(pl.get("hp", -1)),
-		func() -> Node3D: return make_actor(Color(0.30, 0.55, 1.00), 1.0))
+		func() -> Node3D: return make_actor(RIM_PLAYER, 1.0, str(PLAYER_FIGURES.get(str(pl.get("starterClass", "")), "")), Color(0.30, 0.55, 1.00)))
 
 	var comp = pl.get("companion")
 	if comp is Dictionary and int(comp.get("hp", 0)) > 0 and int(comp.get("respawnCooldown", 0)) == 0:
 		var ckind := str(comp.get("kind", ""))
-		var ccol := Color(0.45, 0.72, 1.00) if ckind == "starlight_owl" else Color(0.22, 0.86, 0.78)
+		var ccol := Color(0.45, 0.72, 1.00) if ckind in ["starlight_owl", "StarlightOwl"] else Color(0.22, 0.86, 0.78)
 		var cname := str(comp.get("name", "Companion"))
 		_sync_actor(seen, "companion", Vector3(float(comp["x"]), 0.0, float(comp["y"])), int(comp.get("hp", -1)),
 			func() -> Node3D:
-				var cn := make_actor(ccol, 0.72)
-				add_label(cn, cname)
+				var cstem := str(COMPANION_FIGURES.get(ckind, ""))
+				var cn := make_actor(RIM_COMPANION, 1.0, cstem, ccol)
+				if figure_scene(cstem) == null:
+					add_label(cn, cname) # a capsule needs its name; a figure doesn't
 				return cn)
 
 	for e in zone.get("enemies", []):
 		var boss := bool(e.get("isBoss", false))
+		var arch := str(e.get("archetype", ""))
 		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(float(e["x"]), 0.0, float(e["y"])), int(e.get("hp", -1)),
-			func() -> Node3D: return make_actor(Color(0.90, 0.25, 0.20), 1.35 if boss else 1.0))
+			func() -> Node3D: return make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
+				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20)))
 
 	for npc in zone.get("npcs", []):
 		var nname := str(npc["name"])
 		_sync_actor(seen, "npc:" + str(npc["id"]), Vector3(float(npc["x"]), 0.0, float(npc["y"])), -1,
 			func() -> Node3D:
-				var n := make_actor(Color(0.30, 0.85, 0.40), 1.0)
+				var n := make_actor(RIM_NPC, 1.0, "", Color(0.30, 0.85, 0.40))
 				add_label(n, nname)
 				return n)
 
@@ -956,6 +960,9 @@ func _sync_actor(seen: Dictionary, key: String, target: Vector3, hp: int, make: 
 		entities_root.add_child(n)
 		n.position = target
 		entity_nodes[key] = n
+	var old_target: Vector3 = entity_targets.get(n, target)
+	if old_target != target:
+		face_actor(n, target - old_target)
 	entity_targets[n] = target
 	if hp >= 0:
 		if entity_hp.has(key):
@@ -990,29 +997,124 @@ func _set_layer(n: Node, layer: int) -> void:
 		_set_layer(c, layer)
 
 
-## Root (lerped to the tile) -> "Body" pivot (juice transforms) -> mesh.
-func make_actor(color: Color, scale_factor: float) -> Node3D:
+# Tabletop miniatures: each actor is a figure on a walnut plinth with a
+# faction-coloured rim. Figures live in assets/models/figures/<stem>.glb;
+# an actor without one yet keeps the old capsule on the same plinth.
+const FIGURE_DIR := "res://assets/models/figures/"
+const PLAYER_FIGURES := {"Vanguard": "fig_vanguard"}
+const COMPANION_FIGURES := {"silverwind_lynx": "fig_lynx", "SilverwindLynx": "fig_lynx"}
+const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel"}
+## Figure height in tiles (before the actor's scale factor).
+const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4}
+const PLINTH_H := 0.09
+const RIM_PLAYER := Color(0.30, 0.55, 1.00)
+const RIM_COMPANION := Color(0.22, 0.86, 0.78)
+const RIM_ENEMY := Color(0.95, 0.22, 0.16)
+const RIM_BOSS := Color(1.0, 0.72, 0.2)
+const RIM_NPC := Color(0.40, 0.85, 0.45)
+var _figure_cache := {} # stem -> PackedScene (or null when missing)
+
+
+func figure_scene(stem: String) -> PackedScene:
+	if stem == "":
+		return null
+	if not _figure_cache.has(stem):
+		var path := FIGURE_DIR + stem + ".glb"
+		_figure_cache[stem] = load(path) if ResourceLoader.exists(path) else null
+	return _figure_cache[stem]
+
+
+## Root (lerped to the tile) -> "Body" pivot (juice transforms) ->
+## plinth + "Model" pivot (facing yaw) -> figure or capsule.
+func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Color.WHITE) -> Node3D:
 	var root := Node3D.new()
 	var body := Node3D.new()
 	body.name = "Body"
 	root.add_child(body)
-	var mi := MeshInstance3D.new()
-	var cap := CapsuleMesh.new()
-	cap.radius = 0.32
-	cap.height = 1.15
-	mi.mesh = cap
-	mi.position = Vector3(0.0, 0.6, 0.0)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.7
-	mat.emission_enabled = true
-	mat.emission = Color.WHITE
-	mat.emission_energy_multiplier = 0.0
-	mi.material_override = mat
-	body.add_child(mi)
-	root.set_meta("mat", mat)
+
+	var plinth := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.34
+	cyl.bottom_radius = 0.38
+	cyl.height = PLINTH_H
+	cyl.radial_segments = 24
+	plinth.mesh = cyl
+	plinth.position.y = PLINTH_H * 0.5
+	var pm := StandardMaterial3D.new()
+	pm.albedo_color = Color(0.20, 0.13, 0.08)
+	pm.roughness = 0.55
+	plinth.material_override = pm
+	body.add_child(plinth)
+	var ring := MeshInstance3D.new()
+	var rc := CylinderMesh.new()
+	rc.top_radius = 0.395
+	rc.bottom_radius = 0.40
+	rc.height = 0.035
+	rc.radial_segments = 24
+	ring.mesh = rc
+	ring.position.y = 0.0175
+	var rm := StandardMaterial3D.new()
+	rm.albedo_color = rim
+	rm.emission_enabled = true
+	rm.emission = rim
+	rm.emission_energy_multiplier = 0.5
+	ring.material_override = rm
+	body.add_child(ring)
+
+	var model := Node3D.new()
+	model.name = "Model"
+	model.position.y = PLINTH_H
+	body.add_child(model)
+	var packed := figure_scene(stem)
+	if packed != null:
+		var fig: Node3D = packed.instantiate()
+		var aabb := scene_aabb(fig)
+		if aabb.size.y > 0.001:
+			var s := float(FIGURE_HEIGHT.get(stem, 1.0)) / aabb.size.y
+			fig.scale = Vector3.ONE * s
+			var c := aabb.get_center()
+			fig.position = Vector3(-c.x * s, -aabb.position.y * s, -c.z * s)
+		model.add_child(fig)
+	else:
+		var mi := MeshInstance3D.new()
+		var cap := CapsuleMesh.new()
+		cap.radius = 0.26
+		cap.height = 0.95
+		mi.mesh = cap
+		mi.position.y = 0.475
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = capsule_color
+		mat.roughness = 0.7
+		mi.material_override = mat
+		model.add_child(mi)
+
+	# Hit-flash: an additive overlay on the figure (not the plinth); juice
+	# tweens its alpha.
+	var flash := StandardMaterial3D.new()
+	flash.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	flash.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	flash.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	flash.albedo_color = Color(1, 1, 1, 0)
+	_set_overlay(model, flash)
+	root.set_meta("flash", flash)
 	root.scale = Vector3.ONE * scale_factor
 	return root
+
+
+func _set_overlay(n: Node, mat: Material) -> void:
+	if n is GeometryInstance3D:
+		(n as GeometryInstance3D).material_overlay = mat
+	for c in n.get_children():
+		_set_overlay(c, mat)
+
+
+## Turn a figure to face a world direction (x, z); figures face +Z at rest.
+func face_actor(n: Node3D, dir: Vector3) -> void:
+	if n == null or dir.length() < 0.01:
+		return
+	var model := n.get_node_or_null("Body/Model") as Node3D
+	if model != null:
+		model.rotation.y = atan2(dir.x, dir.z)
 
 
 func make_loot_box() -> Node3D:
@@ -1040,7 +1142,7 @@ func add_label(parent: Node3D, text: String) -> void:
 	label.modulate = Color(0.95, 0.97, 1.0)
 	label.outline_size = 8
 	label.outline_modulate = Color(0.05, 0.05, 0.08)
-	label.position = Vector3(0.0, 1.45, 0.0)
+	label.position = Vector3(0.0, 1.6, 0.0)
 	parent.add_child(label)
 
 
@@ -1840,8 +1942,11 @@ func _cue_juice(kind: String, x: int, y: int, dx: int, dy: int) -> void:
 	match kind:
 		"hit", "crit", "companion_hit", "player_hit":
 			if maxi(absi(dx), absi(dy)) == 1:
-				juice.lunge(actor_at(x - dx, y - dy), dir)
+				var attacker := actor_at(x - dx, y - dy)
+				face_actor(attacker, dir)
+				juice.lunge(attacker, dir)
 			elif dir.length() > 0.0 and player_node != null:
+				face_actor(player_node, dir)
 				juice.lunge(player_node, dir) # ranged: a cast pose
 			if target != null:
 				juice.flash(target, Color(1.0, 0.45, 0.4) if kind == "player_hit" else Color.WHITE)

@@ -50,12 +50,11 @@ func flash(n: Node3D, color := Color.WHITE) -> void:
 	var body := body_of(n)
 	if body == null:
 		return
-	var mat: StandardMaterial3D = n.get_meta("mat", null)
-	if mat != null:
-		mat.emission = color
-		mat.emission_energy_multiplier = 2.6
+	var fm: StandardMaterial3D = n.get_meta("flash", null)
+	if fm != null:
+		fm.albedo_color = Color(color, 0.85)
 		var tf := _track(n.create_tween())
-		tf.tween_property(mat, "emission_energy_multiplier", 0.0, FLASH_TIME)
+		tf.tween_property(fm, "albedo_color:a", 0.0, FLASH_TIME)
 	body.scale = SQUASH
 	var ts := _track(body.create_tween())
 	ts.tween_property(body, "scale", Vector3.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)

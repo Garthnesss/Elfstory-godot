@@ -1468,6 +1468,7 @@ impl GameSession {
                 "usedTiles": self.used_tiles(),
                 "enemies": zone.enemies.iter().filter(|e| e.hp > 0).map(|e| json!({
                     "id": e.id, "name": e.name, "glyph": e.glyph, "x": e.x, "y": e.y,
+                    "archetype": e.archetype.as_str(),
                     "hp": e.hp, "maxHp": e.max_hp, "isBoss": e.is_boss.unwrap_or(false),
                     "alerted": e.alerted,
                     "statuses": e.statuses.iter().map(|st| json!({

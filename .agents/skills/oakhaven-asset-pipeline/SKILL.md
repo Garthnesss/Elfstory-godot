@@ -80,6 +80,7 @@ python3 /Users/gerth/Projects/elfstoryreborn/tools/comfy_runner.py \
 Visually inspect `docs/concepts/<slug>.png` with `read_file`, then stage a copy into `<Artifact Directory Path>/browser_sandbox/uploads/<slug>.png` for Foundry upload.
 
 ### Step B2 — Observable High-Poly Sculpt via Elf Works `/foundry`
+**Queue rule (Nov 22, 2026)**: submit with `python3 tools/genq.py foundry --image <abs cutout> --name <slug>` so the job waits for any other session's generation to finish first; check `python3 tools/genq.py status` before using the `/foundry` page by hand.
 **Rule**: Always run TRELLIS.2 through **Elf Works `/foundry`** (`http://127.0.0.1:8765/foundry`) so live progress and **RECENT 3D MODELS** are visible. Never invoke `generate.sh` directly in a hidden terminal.
 - **In Antigravity**:
   1. Stage a copy of `docs/concepts/<slug>.png` into `<Artifact Directory Path>/browser_sandbox/uploads/<slug>.png` and use the `browser` subagent (`Model: "flash"`) to open `http://127.0.0.1:8765/foundry`, upload `<slug>.png`, set **Output name** = `<slug>`, **Pipeline** = `512`, **PBR Texture** = `1024` (or `512`), and click **Generate .glb**.
