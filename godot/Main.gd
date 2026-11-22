@@ -11,6 +11,7 @@ extends Node3D
 ## `placements_json()` are already tile coords, so they drop straight in.
 
 const WATER_SHADER: Shader = preload("res://water.gdshader")
+const TILE_SHADER: Shader = preload("res://tile.gdshader")
 const Grass := preload("res://grass.gd")
 ## Zones whose "floor" tiles grow meadow grass + wildflowers (grass.gd).
 const GRASS_ZONES := ["oakhaven", "overworld"]
@@ -79,6 +80,7 @@ var current_build_key := ""
 var grass_zone := false # floor tiles take Grass.GROUND under the meadow # zone id + town JSON; a change rebuilds terrain/landmarks
 
 var terrain_root: Node3D
+var cutaway_mat: ShaderMaterial # tall-tile material; player/camera fed each frame
 var landmarks_root: Node3D
 var forge_lights: Array = []
 var _flicker_t := 0.0
@@ -91,9 +93,20 @@ var sfx_cache := {} # path -> AudioStream (or null when missing)
 var player_node: Node3D
 var entity_nodes: Dictionary = {} # key -> Node3D
 var entity_targets: Dictionary = {} # Node3D -> Vector3 (lerp goal)
+var entity_hp: Dictionary = {} # key -> hp in the last snapshot
+var entities_zone := ""
+var dying: Dictionary = {} # "x,y" -> Node3D removed from the snapshot, awaiting its kill cue
+var pending_numbers: Dictionary = {} # "x,y" -> damage taken this action
+var cue_queue: Array = [] # [{"t": seconds until play, "cue": Dictionary}]
+const CUE_STAGGER := 0.11 # gap between consecutive blows in one turn
+const Juice := preload("res://juice.gd")
+var juice: Node
 
 var cam_yaw := 0.0 # radians, snapped to 90-degree steps by [ and ]
 var chase_mode := false # false = Overhead Tactical, true = Chase (V toggles)
+var cam_zoom := 1.0 # mouse wheel / - = ; scales the overhead offset
+const CAM_ZOOM_MIN := 0.65
+const CAM_ZOOM_MAX := 1.7
 var camera_snapped := false
 
 var move_timer := 0.0
@@ -142,6 +155,9 @@ func _ready() -> void:
 	entities_root = Node3D.new()
 	entities_root.name = "Entities"
 	add_child(entities_root)
+	juice = Juice.new()
+	juice.name = "Juice"
+	add_child(juice)
 	fx_root = Node3D.new()
 	fx_root.name = "FX"
 	add_child(fx_root)
@@ -288,7 +304,7 @@ func do_interact() -> void:
 ## world tile step, honouring the quarter-turn camera yaw. Yaw is always a
 ## multiple of 90 degrees, so the result is axis- or diagonal-aligned.
 func screen_dir_to_world(sd: Vector2i) -> Vector2i:
-	var offset := Vector3(0.0, 7.0, 9.0) if chase_mode else Vector3(0.0, 26.0, 14.0)
+	var offset := cam_offset()
 	var rotated := offset.rotated(Vector3.UP, cam_yaw)
 	var fwd := Vector2(-rotated.x, -rotated.z).normalized() # away from camera, tile (x, y)
 	var right := Vector2(-fwd.y, fwd.x) # screen right, tile (x, y)
@@ -300,9 +316,44 @@ func screen_dir_to_world(sd: Vector2i) -> Vector2i:
 # World building: terrain MultiMeshes, water, landmark .glb placements
 # ---------------------------------------------------------------------------
 
+## Per-zone light mood (the report's "per-biome LUT + fog"): golden hour
+## above ground, cooler and dimmer below, tinted per side branch.
+## [sun colour, sun energy, sun pitch, ambient colour, ambient energy, fog colour, fog density,
+##  floor colour, wall colour] (null = keep tile_color's default)
+var mood_floor: Variant = null
+var mood_wall: Variant = null
+const ZONE_MOODS := {
+	"surface": [Color(1.0, 0.78, 0.56), 1.9, -26.0, Color(0.56, 0.66, 0.86), 0.55, Color(0.94, 0.74, 0.58), 0.0012, null, null],
+	"dungeon": [Color(0.78, 0.80, 0.95), 1.15, -52.0, Color(0.40, 0.46, 0.62), 0.75, Color(0.20, 0.22, 0.30), 0.010, Color(0.36, 0.37, 0.34), Color(0.30, 0.29, 0.33)],
+	"barrow": [Color(0.86, 0.80, 0.70), 1.05, -55.0, Color(0.42, 0.40, 0.46), 0.75, Color(0.22, 0.20, 0.22), 0.012, Color(0.42, 0.36, 0.28), Color(0.34, 0.30, 0.26)],
+	"mire": [Color(0.80, 0.95, 0.78), 1.1, -50.0, Color(0.36, 0.52, 0.48), 0.8, Color(0.16, 0.26, 0.22), 0.014, Color(0.26, 0.42, 0.24), Color(0.22, 0.27, 0.24)],
+	"frost": [Color(0.82, 0.92, 1.0), 1.35, -48.0, Color(0.52, 0.64, 0.86), 0.85, Color(0.55, 0.66, 0.80), 0.005, Color(0.62, 0.68, 0.74), Color(0.42, 0.48, 0.58)],
+}
+
+
+func apply_zone_mood(zone_id: String) -> void:
+	var key := "surface"
+	for k in ["dungeon", "barrow", "mire", "frost"]:
+		if zone_id.begins_with(k + "_"):
+			key = k
+	var m: Array = ZONE_MOODS[key]
+	sun.light_color = m[0]
+	sun.light_energy = m[1]
+	sun.rotation_degrees = Vector3(m[2], -45.0, 0.0)
+	var env: Environment = $WorldEnvironment.environment
+	env.ambient_light_color = m[3]
+	env.ambient_light_energy = m[4]
+	env.fog_light_color = m[5]
+	env.fog_density = m[6]
+	mood_floor = m[7]
+	mood_wall = m[8]
+
+
 func rebuild_world() -> void:
+	apply_zone_mood(str(state["zone"]["id"]))
 	clear_children(terrain_root)
 	clear_children(landmarks_root)
+	cutaway_mat = null
 	forge_lights.clear() # the lights were children of landmarks_root (freed above)
 
 	var zone: Dictionary = state["zone"]
@@ -386,6 +437,12 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
+	mm.use_custom_data = true # r = 1: wall fully enclosed by wall (dark rock cap)
+	var wall_set := {}
+	if tall and not is_town:
+		for it in items:
+			if str(it["kind"]) == "wall":
+				wall_set["%d,%d" % [int(it["x"]), int(it["y"])]] = true
 	var box := BoxMesh.new()
 	box.size = Vector3.ONE
 	mm.mesh = box
@@ -403,7 +460,14 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 			bottom = fb.y
 		# Small gaps between boxes draw the tile grid; meadow floor closes
 		# them so the grass reads as one field (Garth, Nov 21).
-		var gap := 1.0 if (grass_zone and kind == "floor") else 0.97
+		var enclosed := 0.0
+		if wall_set.has("%d,%d" % [int(it["x"]), int(it["y"])]):
+			enclosed = 1.0
+			for oy in range(-1, 2):
+				for ox in range(-1, 2):
+					if not wall_set.has("%d,%d" % [int(it["x"]) + ox, int(it["y"]) + oy]):
+						enclosed = 0.0
+		var gap := 1.0 if ((grass_zone and kind == "floor") or enclosed > 0.0) else 0.97
 		var basis := Basis.from_scale(Vector3(gap, h, gap))
 		var origin := Vector3(float(it["x"]), bottom + h * 0.5, float(it["y"]))
 		mm.set_instance_transform(i, Transform3D(basis, origin))
@@ -411,11 +475,15 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 		if bool(it.get("used", false)):
 			c = c.darkened(0.45) # looted chest / spent brazier / attuned waystone
 		mm.set_instance_color(i, c)
+		mm.set_instance_custom_data(i, Color(enclosed, 0.0, 0.0, 0.0))
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true # required for MultiMesh instance colours
-	mat.roughness = 0.95
+	var mat := ShaderMaterial.new()
+	mat.shader = TILE_SHADER
+	if tall:
+		mat.set_shader_parameter("courses", 1.0)
+		mat.set_shader_parameter("cutaway", 1.0)
+		cutaway_mat = mat
 	mmi.material_override = mat
 	return mmi
 
@@ -434,6 +502,10 @@ func flat_box(kind: String) -> Vector2:
 
 
 func tile_color(kind: String, is_town: bool) -> Color:
+	if kind == "floor" and mood_floor != null:
+		return mood_floor
+	if kind == "wall" and mood_wall != null:
+		return mood_wall
 	match kind:
 		"floor":
 			if grass_zone:
@@ -541,6 +613,8 @@ func build_landmarks(placements: Array) -> void:
 		if p.has("rotationY"):
 			node.rotation.y = float(p["rotationY"])
 		landmarks_root.add_child(node)
+		if url != "procedural://village_field":
+			add_ground_skirt(Vector3(float(p["x"]), 0.0, float(p["z"])), target, node.rotation.y)
 		if p.get("light") != null:
 			var ld: Dictionary = p["light"]
 			var omni := OmniLight3D.new()
@@ -563,6 +637,48 @@ func build_landmarks(placements: Array) -> void:
 
 	if not bool(state.get("town", {}).get("blacksmithComplete", false)):
 		build_lot_markers()
+
+
+## Trodden-dirt Decal under a building so it sits *in* the ground instead
+## of on it. Projects onto layer 1 only (terrain, grass, the building's own
+## base); actors live on layer 2 and never pick up the stain.
+func add_ground_skirt(at: Vector3, width: float, yaw: float) -> void:
+	var d := Decal.new()
+	d.texture_albedo = dirt_texture()
+	var w := width * 0.95 + 1.4
+	d.size = Vector3(w, 0.9, w)
+	d.position = at + Vector3(0.0, 0.1, 0.0)
+	d.rotation.y = yaw
+	d.cull_mask = 1
+	d.albedo_mix = 0.85
+	d.upper_fade = 0.6
+	d.lower_fade = 0.3
+	landmarks_root.add_child(d)
+
+
+var _dirt_tex: ImageTexture
+func dirt_texture() -> ImageTexture:
+	if _dirt_tex != null:
+		return _dirt_tex
+	const N := 128
+	var noise := FastNoiseLite.new()
+	noise.seed = 7
+	noise.frequency = 0.045
+	noise.fractal_octaves = 4
+	var img := Image.create(N, N, false, Image.FORMAT_RGBA8)
+	for y in N:
+		for x in N:
+			var u := (float(x) + 0.5) / N * 2.0 - 1.0
+			var v := (float(y) + 0.5) / N * 2.0 - 1.0
+			# Rounded-square falloff, edge broken up by noise.
+			var r := pow(pow(absf(u), 4.0) + pow(absf(v), 4.0), 0.25)
+			var n := noise.get_noise_2d(x, y) * 0.5 + 0.5
+			var a := clampf((1.0 - smoothstep(0.55, 1.0, r + (n - 0.5) * 0.35)) * 1.0, 0.0, 1.0)
+			var tone := lerpf(0.75, 1.15, n)
+			var c := Color(0.42 * tone, 0.33 * tone, 0.23 * tone, a * 0.92)
+			img.set_pixel(x, y, c)
+	_dirt_tex = ImageTexture.create_from_image(img)
+	return _dirt_tex
 
 
 func _add_part_box(
@@ -722,8 +838,8 @@ func make_placeholder(label_text: String, target: float) -> Node3D:
 	root.add_child(mi)
 	var label := Label3D.new()
 	label.text = label_text
-	label.font_size = 64
-	label.pixel_size = 0.008
+	label.font_size = 48
+	label.pixel_size = 0.0065
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.position = Vector3(0.0, 2.5, 0.0)
 	root.add_child(label)
@@ -761,56 +877,125 @@ func _collect_aabb(n: Node, xf: Transform3D) -> void:
 # Entities: capsules + loot boxes, rebuilt per refresh, lerped per frame
 # ---------------------------------------------------------------------------
 
+## Actors persist across refreshes (keyed by entity id) so lunges, flashes
+## and deaths can play on them. HP drops between snapshots become damage
+## numbers, released by the matching fx cue. A zone change starts clean.
 func refresh_entities() -> void:
-	# Remember where things stood so a rebuild doesn't teleport them.
-	var prev := {}
-	for child in entities_root.get_children():
-		if child.has_meta("ekey"):
-			prev[str(child.get_meta("ekey"))] = child.position
-	clear_children(entities_root)
-	entity_nodes.clear()
-	entity_targets.clear()
-
 	var zone: Dictionary = state["zone"]
 	var pl: Dictionary = state["player"]
+	var zid := str(zone["id"])
+	if zid != entities_zone:
+		entities_zone = zid
+		clear_children(entities_root)
+		entity_nodes.clear()
+		entity_targets.clear()
+		entity_hp.clear()
+		dying.clear()
+		cue_queue.clear()
+	pending_numbers.clear()
+	var seen := {}
 
-	player_node = make_capsule(Color(0.30, 0.55, 1.00), 1.0)
-	add_entity("player", player_node, Vector3(float(pl["x"]), 0.0, float(pl["y"])), prev)
+	player_node = _sync_actor(seen, "player", Vector3(float(pl["x"]), 0.0, float(pl["y"])), int(pl.get("hp", -1)),
+		func() -> Node3D: return make_actor(Color(0.30, 0.55, 1.00), 1.0))
 
 	var comp = pl.get("companion")
 	if comp is Dictionary and int(comp.get("hp", 0)) > 0 and int(comp.get("respawnCooldown", 0)) == 0:
 		var ckind := str(comp.get("kind", ""))
 		var ccol := Color(0.45, 0.72, 1.00) if ckind == "starlight_owl" else Color(0.22, 0.86, 0.78)
-		var cn := make_capsule(ccol, 0.72)
-		add_label(cn, str(comp.get("name", "Companion")))
-		add_entity("companion", cn, Vector3(float(comp["x"]), 0.0, float(comp["y"])), prev)
+		var cname := str(comp.get("name", "Companion"))
+		_sync_actor(seen, "companion", Vector3(float(comp["x"]), 0.0, float(comp["y"])), int(comp.get("hp", -1)),
+			func() -> Node3D:
+				var cn := make_actor(ccol, 0.72)
+				add_label(cn, cname)
+				return cn)
 
 	for e in zone.get("enemies", []):
 		var boss := bool(e.get("isBoss", false))
-		var n := make_capsule(Color(0.90, 0.25, 0.20), 1.35 if boss else 1.0)
-		add_entity("enemy:" + str(e["id"]), n, Vector3(float(e["x"]), 0.0, float(e["y"])), prev)
+		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(float(e["x"]), 0.0, float(e["y"])), int(e.get("hp", -1)),
+			func() -> Node3D: return make_actor(Color(0.90, 0.25, 0.20), 1.35 if boss else 1.0))
 
 	for npc in zone.get("npcs", []):
-		var n := make_capsule(Color(0.30, 0.85, 0.40), 1.0)
-		add_label(n, str(npc["name"]))
-		add_entity("npc:" + str(npc["id"]), n, Vector3(float(npc["x"]), 0.0, float(npc["y"])), prev)
+		var nname := str(npc["name"])
+		_sync_actor(seen, "npc:" + str(npc["id"]), Vector3(float(npc["x"]), 0.0, float(npc["y"])), -1,
+			func() -> Node3D:
+				var n := make_actor(Color(0.30, 0.85, 0.40), 1.0)
+				add_label(n, nname)
+				return n)
 
 	for l in zone.get("loot", []):
-		var n := make_loot_box()
-		var key := "loot:%d,%d" % [int(l["x"]), int(l["y"])]
-		add_entity(key, n, Vector3(float(l["x"]), 0.0, float(l["y"])), prev)
+		_sync_actor(seen, "loot:%d,%d" % [int(l["x"]), int(l["y"])], Vector3(float(l["x"]), 0.0, float(l["y"])), -1,
+			func() -> Node3D: return make_loot_box())
+
+	# Gone from the snapshot: enemies (and a collapsing companion) wait for
+	# their kill cue to pop; everything else just goes.
+	for key in entity_nodes.keys():
+		if seen.has(key):
+			continue
+		var n: Node3D = entity_nodes[key]
+		var tgt: Vector3 = entity_targets.get(n, n.position)
+		entity_nodes.erase(key)
+		entity_targets.erase(n)
+		var last_hp := int(entity_hp.get(key, 0))
+		entity_hp.erase(key)
+		if (str(key).begins_with("enemy:") or key == "companion") and is_instance_valid(n):
+			var tk := _tile_key(tgt)
+			if last_hp > 0:
+				pending_numbers[tk] = int(pending_numbers.get(tk, 0)) + last_hp
+			dying[tk] = n
+		elif is_instance_valid(n):
+			n.queue_free()
 
 
-func add_entity(key: String, node: Node3D, target: Vector3, prev: Dictionary) -> void:
-	node.set_meta("ekey", key)
-	entities_root.add_child(node)
-	node.position = prev.get(key, target) # start where it was (or at target if new)
-	entity_nodes[key] = node
-	entity_targets[node] = target
+func _sync_actor(seen: Dictionary, key: String, target: Vector3, hp: int, make: Callable) -> Node3D:
+	seen[key] = true
+	var n: Node3D = entity_nodes.get(key)
+	if n == null or not is_instance_valid(n):
+		n = make.call()
+		n.set_meta("ekey", key)
+		_set_layer(n, 2) # ground decals skip actors
+		entities_root.add_child(n)
+		n.position = target
+		entity_nodes[key] = n
+	entity_targets[n] = target
+	if hp >= 0:
+		if entity_hp.has(key):
+			var dmg := int(entity_hp[key]) - hp
+			if dmg > 0:
+				var tk := _tile_key(target)
+				pending_numbers[tk] = int(pending_numbers.get(tk, 0)) + dmg
+		entity_hp[key] = hp
+	return n
 
 
-func make_capsule(color: Color, scale_factor: float) -> Node3D:
+func _tile_key(p: Vector3) -> String:
+	return "%d,%d" % [roundi(p.x), roundi(p.z)]
+
+
+## Live actor standing on (or walking to) a tile; loot never counts.
+func actor_at(tx: int, ty: int) -> Node3D:
+	var tk := "%d,%d" % [tx, ty]
+	for key in entity_nodes:
+		if str(key).begins_with("loot:"):
+			continue
+		var n: Node3D = entity_nodes[key]
+		if _tile_key(entity_targets.get(n, n.position)) == tk:
+			return n
+	return dying.get(tk)
+
+
+func _set_layer(n: Node, layer: int) -> void:
+	if n is VisualInstance3D:
+		(n as VisualInstance3D).layers = 1 << (layer - 1)
+	for c in n.get_children():
+		_set_layer(c, layer)
+
+
+## Root (lerped to the tile) -> "Body" pivot (juice transforms) -> mesh.
+func make_actor(color: Color, scale_factor: float) -> Node3D:
 	var root := Node3D.new()
+	var body := Node3D.new()
+	body.name = "Body"
+	root.add_child(body)
 	var mi := MeshInstance3D.new()
 	var cap := CapsuleMesh.new()
 	cap.radius = 0.32
@@ -820,8 +1005,12 @@ func make_capsule(color: Color, scale_factor: float) -> Node3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.roughness = 0.7
+	mat.emission_enabled = true
+	mat.emission = Color.WHITE
+	mat.emission_energy_multiplier = 0.0
 	mi.material_override = mat
-	root.add_child(mi)
+	body.add_child(mi)
+	root.set_meta("mat", mat)
 	root.scale = Vector3.ONE * scale_factor
 	return root
 
@@ -845,13 +1034,13 @@ func make_loot_box() -> Node3D:
 func add_label(parent: Node3D, text: String) -> void:
 	var label := Label3D.new()
 	label.text = text
-	label.font_size = 64
-	label.pixel_size = 0.008
+	label.font_size = 48
+	label.pixel_size = 0.0065
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.modulate = Color(0.95, 0.97, 1.0)
 	label.outline_size = 8
 	label.outline_modulate = Color(0.05, 0.05, 0.08)
-	label.position = Vector3(0.0, 1.55, 0.0)
+	label.position = Vector3(0.0, 1.45, 0.0)
 	parent.add_child(label)
 
 
@@ -865,6 +1054,7 @@ func _process(delta: float) -> void:
 	for node in entity_targets.keys():
 		if is_instance_valid(node):
 			node.position = node.position.lerp(entity_targets[node], w)
+	_drain_cues(delta)
 	update_camera(delta)
 	update_held_movement(delta)
 
@@ -879,23 +1069,51 @@ func update_camera(delta: float) -> void:
 		camera_snapped = true
 	else:
 		camera_rig.position = camera_rig.position.lerp(target, minf(1.0, delta * 6.0))
-	var offset := Vector3(0.0, 7.0, 9.0) if chase_mode else Vector3(0.0, 26.0, 14.0)
+	var offset := cam_offset()
 	camera.position = offset.rotated(Vector3.UP, cam_yaw)
+	var shake: Vector2 = juice.shake_offset(delta)
+	camera.h_offset = shake.x
+	camera.v_offset = shake.y
 	var look := camera_rig.position + Vector3(0.0, 0.8, 0.0)
 	if camera.global_position.distance_squared_to(look) > 0.01:
 		camera.look_at(look, Vector3.UP)
+	if cutaway_mat != null:
+		cutaway_mat.set_shader_parameter("player_pos", player_node.position)
+		cutaway_mat.set_shader_parameter("cam_pos", camera.global_position)
+		# Chase view sits low behind the player, so it needs a wider cut.
+		cutaway_mat.set_shader_parameter("cut_radius", 2.4 if chase_mode else 1.8)
+
+
+## Camera offset from the player. Overhead is a ~45-degree diorama tilt
+## (close enough that actors read as figures, far enough to see a room).
+func cam_offset() -> Vector3:
+	if chase_mode:
+		return Vector3(0.0, 7.0, 9.0)
+	return Vector3(0.0, 13.5, 12.0) * cam_zoom
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and title_screen == null:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			cam_zoom = clampf(cam_zoom - 0.08, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			cam_zoom = clampf(cam_zoom + 0.08, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
+		return
 	if event is InputEventKey:
 		var k := event as InputEventKey
 		if not k.pressed or k.echo:
 			return
 		if title_screen != null:
 			return # Continue / New Game first
+		flush_cues() # never make the player wait on an animation
 		match k.physical_keycode:
 			KEY_V:
 				chase_mode = not chase_mode
+			KEY_MINUS:
+				cam_zoom = clampf(cam_zoom + 0.12, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
+			KEY_EQUAL:
+				cam_zoom = clampf(cam_zoom - 0.12, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
 			KEY_BRACKETLEFT:
 				cam_yaw += PI * 0.5
 			KEY_BRACKETRIGHT:
@@ -986,6 +1204,7 @@ func update_held_movement(delta: float) -> void:
 	held.x = clampi(held.x, -1, 1)
 	held.y = clampi(held.y, -1, 1)
 	if held != Vector2i.ZERO:
+		flush_cues()
 		do_move(held)
 		move_timer = MOVE_REPEAT
 
@@ -1006,7 +1225,8 @@ func build_ui() -> void:
 	var hud_box := VBoxContainer.new()
 	hud_panel.add_child(hud_box)
 	hud_title = make_label()
-	hud_title.add_theme_font_size_override("font_size", 17)
+	hud_title.add_theme_font_size_override("font_size", 18)
+	hud_title.add_theme_color_override("font_color", UI_GOLD)
 	hud_box.add_child(hud_title)
 	hud_body = make_label()
 	hud_box.add_child(hud_body)
@@ -1024,8 +1244,8 @@ func build_ui() -> void:
 	log_label.bbcode_enabled = false
 	log_label.scroll_following = true
 	log_label.custom_minimum_size = Vector2(520, 118)
-	log_label.add_theme_font_size_override("normal_font_size", 13)
-	log_label.add_theme_color_override("default_color", Color(0.88, 0.90, 0.94))
+	log_label.add_theme_font_size_override("normal_font_size", 14)
+	log_label.add_theme_color_override("default_color", Color(UI_INK, 0.92))
 	log_panel.add_child(log_label)
 
 	# Town panel, right side (visible in town zones only).
@@ -1118,7 +1338,8 @@ func build_ui() -> void:
 	var mer_box := VBoxContainer.new()
 	merchant_panel.add_child(mer_box)
 	merchant_title = make_label()
-	merchant_title.add_theme_font_size_override("font_size", 17)
+	merchant_title.add_theme_font_size_override("font_size", 18)
+	merchant_title.add_theme_color_override("font_color", UI_GOLD)
 	mer_box.add_child(merchant_title)
 	merchant_rows = VBoxContainer.new()
 	mer_box.add_child(merchant_rows)
@@ -1128,20 +1349,71 @@ func build_ui() -> void:
 	merchant_panel.hide()
 
 
+# Storybook UI skin: walnut-timber panels with a brass edge, cream
+# parchment text, serif type. One Theme shared by every in-game panel.
+const UI_INK := Color(0.96, 0.91, 0.80)
+const UI_GOLD := Color(0.95, 0.78, 0.42)
+const UI_BRASS := Color(0.72, 0.55, 0.28)
+var _ui_theme: Theme
+
+func ui_theme() -> Theme:
+	if _ui_theme != null:
+		return _ui_theme
+	var t := Theme.new()
+	var body := SystemFont.new()
+	body.font_names = PackedStringArray(["Palatino", "Book Antiqua", "Georgia", "serif"])
+	t.default_font = body
+	t.default_font_size = 15
+	t.set_color("font_color", "Label", UI_INK)
+	t.set_color("default_color", "RichTextLabel", UI_INK)
+	for st in ["normal", "hover", "pressed", "disabled", "focus"]:
+		var sb := StyleBoxFlat.new()
+		match st:
+			"hover":
+				sb.bg_color = Color(0.42, 0.28, 0.14, 0.95)
+			"pressed":
+				sb.bg_color = Color(0.30, 0.19, 0.09, 0.95)
+			"disabled":
+				sb.bg_color = Color(0.18, 0.14, 0.11, 0.7)
+			"focus":
+				sb.bg_color = Color(0, 0, 0, 0)
+			_:
+				sb.bg_color = Color(0.30, 0.20, 0.11, 0.92)
+		sb.border_color = UI_BRASS if st != "disabled" else Color(UI_BRASS, 0.35)
+		sb.set_border_width_all(1)
+		sb.set_corner_radius_all(5)
+		sb.content_margin_left = 10
+		sb.content_margin_right = 10
+		sb.content_margin_top = 5
+		sb.content_margin_bottom = 5
+		t.set_stylebox(st, "Button", sb)
+	t.set_color("font_color", "Button", UI_INK)
+	t.set_color("font_hover_color", "Button", Color(1.0, 0.95, 0.82))
+	t.set_color("font_disabled_color", "Button", Color(UI_INK, 0.4))
+	_ui_theme = t
+	return t
+
+
 func make_panel() -> PanelContainer:
 	var p := PanelContainer.new()
+	p.theme = ui_theme()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.08, 0.09, 0.12, 0.84)
-	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(10.0)
+	sb.bg_color = Color(0.13, 0.085, 0.05, 0.9)
+	sb.border_color = UI_BRASS
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(9)
+	sb.shadow_color = Color(0, 0, 0, 0.35)
+	sb.shadow_size = 6
+	sb.shadow_offset = Vector2(0, 3)
+	sb.set_content_margin_all(12.0)
 	p.add_theme_stylebox_override("panel", sb)
 	return p
 
 
 func make_label() -> Label:
 	var l := Label.new()
-	l.add_theme_font_size_override("font_size", 14)
-	l.add_theme_color_override("font_color", Color(0.92, 0.93, 0.95))
+	l.add_theme_font_size_override("font_size", 15)
+	l.add_theme_color_override("font_color", UI_INK)
 	return l
 
 
@@ -1514,62 +1786,154 @@ func play_fx() -> void:
 	var parsed: Variant = JSON.parse_string(session.take_fx_json())
 	if not (parsed is Array):
 		return
+	# Blows in one turn play one after another (player swing, companion,
+	# each enemy's reply) so a multi-action turn reads; a key press flushes
+	# the rest at once (flush_cues).
+	var t := 0.0
 	for c in parsed:
 		var cue: Dictionary = c
-		var kind := str(cue.get("kind", ""))
-		var at := Vector3(float(cue.get("x", 0)), 0.6, float(cue.get("y", 0)))
-		var dir := Vector3(float(cue.get("dx", 0)), 0.0, float(cue.get("dy", 0)))
-		match kind:
-			"hit", "crit":
-				# The slash is authored at character scale, swinging along -Z
-				# from the attacker's origin: spawn it on the attacker's tile,
-				# facing the target, shrunk to the 1-unit tile grid.
-				if dir.length() > 0.0:
-					var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
-					var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
-					swing.scale = Vector3.ONE * SLASH_SCALE
-				spawn_vfx(VFX_HIT, at, 1.5 if kind == "crit" else 1.0)
-			"kill":
-				spawn_vfx(VFX_HIT, at, 1.8)
-			"player_hit":
-				spawn_vfx(VFX_HIT, at, 0.7)
-			"unseal":
-				spawn_vfx(VFX_HIT, at + Vector3(0, 0.6, 0), 2.0)
-			"shield_bash":
-				spawn_vfx(VFX_HIT, at, 1.4)
-			"frost_nova":
-				spawn_vfx(VFX_HIT, at, 3.0)
-			"iron_fortress", "shadowstep":
-				spawn_sparkle(at, 1.6)
-			"ember_lance", "venom_tip", "executioners_mark":
-				spawn_vfx(VFX_HIT, at, 1.2)
-			"pickup", "chest", "brazier", "waystone":
-				spawn_sparkle(at, 1.0)
-			"level_up":
-				spawn_sparkle(at, 1.6)
-			"town_build":
-				spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.4)
-				spawn_sparkle(at, 2.0)
-				spawn_sparkle(at + Vector3(-0.9, 0.3, 0.4), 1.5)
-				spawn_sparkle(at + Vector3(0.9, 0.3, -0.4), 1.5)
-			"town_relocate":
-				spawn_sparkle(at, 1.8)
-			"town_tier_up":
-				spawn_sparkle(at, 2.2)
-			"companion", "haste":
-				spawn_sparkle(at, 1.0)
-			"companion_hit":
-				if dir.length() > 0.0:
-					var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
-					var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
-					swing.scale = Vector3.ONE * (SLASH_SCALE * 0.8)
-				spawn_vfx(VFX_HIT, at, 0.85)
-			"deathless", "boss_roar":
-				spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.0)
-				spawn_sparkle(at, 1.4)
-			"spore_burst":
-				spawn_vfx(VFX_HIT, at, 2.2)
-		play_sfx(kind)
+		cue_queue.append({"t": t, "cue": cue})
+		if ATTACK_CUES.has(str(cue.get("kind", ""))):
+			t += CUE_STAGGER
+	_drain_cues(0.0)
+
+
+const ATTACK_CUES := ["hit", "crit", "player_hit", "companion_hit", "kill"]
+
+
+func _drain_cues(delta: float) -> void:
+	if cue_queue.is_empty():
+		return
+	for q in cue_queue:
+		q["t"] = float(q["t"]) - delta
+	while not cue_queue.is_empty() and float(cue_queue[0]["t"]) <= 0.0:
+		_play_cue(cue_queue.pop_front()["cue"])
+	if cue_queue.is_empty():
+		_settle_leftovers()
+
+
+## Play everything still queued right now (input buffering).
+func flush_cues() -> void:
+	while not cue_queue.is_empty():
+		_play_cue(cue_queue.pop_front()["cue"])
+	_settle_leftovers()
+	juice.snap()
+
+
+## Deaths and damage the cues didn't claim (DoT ticks, thorns...).
+func _settle_leftovers() -> void:
+	for tk in dying.keys():
+		juice.die(dying[tk])
+	dying.clear()
+	for tk in pending_numbers.keys():
+		var parts: PackedStringArray = str(tk).split(",")
+		var at := Vector3(float(parts[0]), 0.0, float(parts[1]))
+		juice.number(fx_root, at, str(pending_numbers[tk]), Color(0.85, 0.75, 1.0))
+	pending_numbers.clear()
+
+
+## Lunge / flash / number / hit-stop / shake for one cue, then its VFX + SFX.
+func _cue_juice(kind: String, x: int, y: int, dx: int, dy: int) -> void:
+	var tk := "%d,%d" % [x, y]
+	var target := actor_at(x, y)
+	var dir := Vector3(float(dx), 0.0, float(dy))
+	match kind:
+		"hit", "crit", "companion_hit", "player_hit":
+			if maxi(absi(dx), absi(dy)) == 1:
+				juice.lunge(actor_at(x - dx, y - dy), dir)
+			elif dir.length() > 0.0 and player_node != null:
+				juice.lunge(player_node, dir) # ranged: a cast pose
+			if target != null:
+				juice.flash(target, Color(1.0, 0.45, 0.4) if kind == "player_hit" else Color.WHITE)
+		"ember_lance", "venom_tip", "executioners_mark", "shield_bash", "frost_nova":
+			if player_node != null and dir.length() > 0.0:
+				juice.lunge(player_node, dir)
+			if target != null:
+				juice.flash(target)
+		"kill":
+			if dying.has(tk):
+				juice.die(dying[tk])
+				dying.erase(tk)
+		"deathless", "spore_burst":
+			if target != null:
+				juice.flash(target, Color(0.7, 1.0, 0.5))
+	if pending_numbers.has(tk) and kind != "windup":
+		var dmg := int(pending_numbers[tk])
+		pending_numbers.erase(tk)
+		var col := Color(1.0, 0.36, 0.3) if kind == "player_hit" else (Color(1.0, 0.85, 0.25) if kind == "crit" else Color(1.0, 0.98, 0.92))
+		juice.number(fx_root, Vector3(float(x), 0.0, float(y)), str(dmg) + ("!" if kind == "crit" else ""), col, kind == "crit")
+	match kind:
+		"crit":
+			juice.hit_stop(0.06)
+			juice.add_trauma(0.3)
+		"kill":
+			juice.hit_stop(0.07)
+			juice.add_trauma(0.28)
+		"player_hit":
+			juice.hit_stop(0.05)
+			juice.add_trauma(0.42)
+		"spore_burst", "frost_nova":
+			juice.add_trauma(0.5)
+		"boss_roar":
+			juice.add_trauma(0.6)
+
+
+func _play_cue(cue: Dictionary) -> void:
+	var kind := str(cue.get("kind", ""))
+	_cue_juice(kind, int(cue.get("x", 0)), int(cue.get("y", 0)), int(cue.get("dx", 0)), int(cue.get("dy", 0)))
+	var at := Vector3(float(cue.get("x", 0)), 0.6, float(cue.get("y", 0)))
+	var dir := Vector3(float(cue.get("dx", 0)), 0.0, float(cue.get("dy", 0)))
+	match kind:
+		"hit", "crit":
+			# The slash is authored at character scale, swinging along -Z
+			# from the attacker's origin: spawn it on the attacker's tile,
+			# facing the target, shrunk to the 1-unit tile grid.
+			if dir.length() > 0.0:
+				var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
+				var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
+				swing.scale = Vector3.ONE * SLASH_SCALE
+			spawn_vfx(VFX_HIT, at, 1.5 if kind == "crit" else 1.0)
+		"kill":
+			spawn_vfx(VFX_HIT, at, 1.8)
+		"player_hit":
+			spawn_vfx(VFX_HIT, at, 0.7)
+		"unseal":
+			spawn_vfx(VFX_HIT, at + Vector3(0, 0.6, 0), 2.0)
+		"shield_bash":
+			spawn_vfx(VFX_HIT, at, 1.4)
+		"frost_nova":
+			spawn_vfx(VFX_HIT, at, 3.0)
+		"iron_fortress", "shadowstep":
+			spawn_sparkle(at, 1.6)
+		"ember_lance", "venom_tip", "executioners_mark":
+			spawn_vfx(VFX_HIT, at, 1.2)
+		"pickup", "chest", "brazier", "waystone":
+			spawn_sparkle(at, 1.0)
+		"level_up":
+			spawn_sparkle(at, 1.6)
+		"town_build":
+			spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.4)
+			spawn_sparkle(at, 2.0)
+			spawn_sparkle(at + Vector3(-0.9, 0.3, 0.4), 1.5)
+			spawn_sparkle(at + Vector3(0.9, 0.3, -0.4), 1.5)
+		"town_relocate":
+			spawn_sparkle(at, 1.8)
+		"town_tier_up":
+			spawn_sparkle(at, 2.2)
+		"companion", "haste":
+			spawn_sparkle(at, 1.0)
+		"companion_hit":
+			if dir.length() > 0.0:
+				var from := Vector3(at.x - dir.x, 0.0, at.z - dir.z)
+				var swing := VFXEffect.spawn(VFX_SLASH, fx_root, from, Basis.looking_at(dir.normalized(), Vector3.UP))
+				swing.scale = Vector3.ONE * (SLASH_SCALE * 0.8)
+			spawn_vfx(VFX_HIT, at, 0.85)
+		"deathless", "boss_roar":
+			spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.0)
+			spawn_sparkle(at, 1.4)
+		"spore_burst":
+			spawn_vfx(VFX_HIT, at, 2.2)
+	play_sfx(kind)
 
 
 func spawn_vfx(scene: PackedScene, at: Vector3, scale: float) -> void:

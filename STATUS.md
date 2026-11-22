@@ -304,3 +304,16 @@ and glTF inspection rather than assumed:
   - `PromptKind::BossConfrontation` triggers pre-fight confrontation modals for Vaelen, Serath, and Malakor (each with attribute-gated options and one-time sighting per archetype) plus Mini-Boss Warden sightings (`boss_roar` FX cue).
   - `after_step_on_tile` consumes `haste_steps` for free movement without advancing enemy turns (`haste` FX cue), cleared on `wake_in_oakhaven`.
 - **Verified:** `cargo test` **107/107** (4 new tests: `companion_fights_heals_swaps_and_reforms`, `grave_husk_revives_once_and_spore_hulk_bursts_adjacent`, `boss_confrontation_prompts_trigger_once_and_resolve`, `haste_steps_grant_free_moves_without_enemy_turn`), `cargo build`, Godot headless `run1_check.gd` (`RUN1_CHECK_OK`), 30-frame `Main.tscn`, and `tools/build_app.sh --smoke`.
+
+## Diorama look & combat feel — report Option A, Days 1–3 code half (Nov 22, 2026, branch `presentation/diorama-feel`)
+
+- **Lighting (`Main.tscn`):** Filmic → **AgX** (exposure 1.12, contrast 1.32), cool ambient fill instead of the orange sky, stronger low sun with soft shadows, SSAO retuned + SSIL on, saturation boost cut from 1.22 to 1.08.
+- **Per-zone moods (`Main.gd` `ZONE_MOODS`):** golden hour on the surface; cool crypt (main descent), dusty barrow, teal mire, icy frost, each with its own sun, ambient, fog, floor and wall stone.
+- **Terrain shader (`tile.gdshader`):** per-tile tone jitter, painted mottling, darkened block rims, stone courses + dark foot on tall sides. Dungeon rock fully enclosed by rock (MultiMesh custom data) renders as one dark earth mass, so rooms read as carved out instead of a grid of boxes.
+- **Wall cutaway:** tall tiles between the player and the camera dissolve with a screen-door dither (radius 1.8, 2.4 in chase view).
+- **Ground skirts:** procedural dirt `Decal` under every Oakhaven building; actors sit on render layer 2 so decals skip them.
+- **Camera:** overhead pulled in to a ~45° diorama tilt (`0, 13.5, 12`); mouse wheel or `-`/`=` zooms 0.65–1.7×.
+- **Combat feel (`juice.gd`):** actors persist between refreshes (keyed by entity id). Attack lunge (0.05 s pull → 0.07 s strike), 0.12 s hit-flash + squash, death flatten-pop, arcing damage numbers taken from snapshot HP diffs, hit-stop only on crits/kills/hits taken, camera trauma shake. Blows in one turn are staggered 0.11 s apart, and any key press flushes queued cues and finishes every tween, so input is never blocked.
+- **UI skin:** walnut-timber panels with brass edges, cream serif (Palatino) text, matching buttons; smaller NPC name labels.
+- **Verified:** `cargo test` 107/107, headless `run1_check.gd` (`RUN1_CHECK_OK`), 30-frame headless `Main`, plus captures of Oakhaven Tier 2, dungeon_1/barrow_1/mire_1/frost_1, and a scripted 3-swing combat sequence at 40/100/250/500 ms. **Not yet checked by hand in the editor.**
+- **Not done (needs assets):** miniature actors to replace the capsules, and the mauve town wall blocks.
