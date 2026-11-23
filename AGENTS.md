@@ -9,6 +9,7 @@ Muse Code, Claude Code, Codex, and Antigravity read this file as project rules w
 - **Reference Implementation**: `/Users/gerth/Projects/elfstoryreborn` (TypeScript + Three.js prototype, 133/133 unit tests passing, Milestones 1–3 landed Nov 20, 2026)
 - **Rust Test**: `cd rust && cargo test`
 - **Rust Build (GDExtension)**: `cd rust && cargo build` (or `--release`)
+- **Godot Verify Gate**: `/Users/gerth/Projects/gamedev-pipeline/tools/godot_verify.sh godot` (headless import + parse check + `run1_check.gd` + `playtest_check.gd`)
 - **Godot Launch**: `/Applications/Godot.app/Contents/MacOS/Godot --path godot`
 - **Godot Headless Check**: `/Applications/Godot.app/Contents/MacOS/Godot --headless --path godot --quit`
 
@@ -19,6 +20,7 @@ Muse Code, Claude Code, Codex, and Antigravity read this file as project rules w
 3. `ARCHITECTURE.md` — Crate layout (`elfstory-core` vs. `elfstory-gdext`), Godot scene/UI layout, and save format.
 4. `ROADMAP.md` & `STATUS.md` — Sequenced milestones and current verified state.
 5. `docs/elfstory-reborn-audit-2026-11-19.md` — Full 5-pillar design/tech/asset audit of the web prototype so we never re-introduce those bugs.
+6. **Shared game-dev pipeline (all of Garth's games):** read `/Users/gerth/Projects/gamedev-pipeline/AGENT_RULES.md` before any Godot work. This project's docs win on project-specific decisions (Rust core, asset overrides in `tools/ASSET_GATE.md`). Verify gate: `/Users/gerth/Projects/gamedev-pipeline/tools/godot_verify.sh godot` plus `cd rust && cargo test`.
 
 ## Hardware & Local AI Stack Rules (Mandatory)
 
@@ -34,7 +36,8 @@ Muse Code, Claude Code, Codex, and Antigravity read this file as project rules w
 Before creating or modifying any 3D building, prop, landmark, texture, creature, or character, read `.agents/skills/oakhaven-asset-pipeline/SKILL.md`:
 
 1. **Track A — Architecture & Hard-Surface Props** *(No TRELLIS.2)*: `tools/comfy_runner.py --mode pbr-texture` (1024px seamless PBR) + `tools/blender_arch_kit.py` (`1,500–4,000` clean quads, `< 500 KB` `.glb`, bottom-center `Z = 0`, beveled edges + weighted normals) → export into `godot/assets/models/`.
-2. **Track B — Organic Creatures, Trees, Rocks & Statues**: `tools/comfy_runner.py --mode concept` (1024px flat-diffuse delighted) → Elf Works `/foundry` → `tools/blender_retopo_bake.py` (QuadriFlow `~2,500` pure quads + Shrinkwrap + Smart UV + Cycles 1024px Diffuse/Normal/AO bake + Weighted Normals, `< 600 KB` `.glb`) → export into `godot/assets/models/`.
+2. **Track B — Organic Creatures, Figures & Landmarks**: `tools/comfy_runner.py --mode concept` (DreamShaper XL Turbo `DreamShaperXL_Turbo_v2_1.safetensors`, `--steps 6 --cfg 2.0`, delighting off) → BiRefNet cutout (`~/asset-tools/venv/bin/rembg i -m birefnet-general`) → `python3 tools/genq.py foundry` → `tools/blender_decimate_source.py --rebake --tex-size 2048` (add `--cut-base` for miniatures) + `tools/check_watertight.py` → export into `godot/assets/models/`.
+3. **Asset Gate & Provenance**: Every shipped model requires source-vs-candidate + in-game captures + independent adversarial review in `docs/asset-gate/` (`tools/ASSET_GATE.md`), Garth's explicit approval (including open-shell/size exceptions), and a row in `docs/asset_provenance.csv`.
 
 ## Non-Negotiable Architecture Rules
 
