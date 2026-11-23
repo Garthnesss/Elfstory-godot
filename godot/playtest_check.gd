@@ -17,70 +17,87 @@ var damage_seen := false
 var player_hurt := false
 
 
+func _as_bool(v: Variant) -> bool:
+	return v is bool and (v as bool)
+
+
+func _as_int(v: Variant, fallback: int = 0) -> int:
+	if v is int:
+		return v
+	if v is float:
+		var vf: float = v
+		return int(vf)
+	return fallback
+
+
 func fail(msg: String) -> void:
 	push_error("PLAYTEST_FAIL: " + msg)
 	quit(1)
 
 
 func state() -> Dictionary:
-	var st: Variant = JSON.parse_string(s.state_json())
-	if st == null:
+	var st: Variant = JSON.parse_string(str(s.call("state_json")))
+	if not (st is Dictionary):
 		fail("state_json() did not parse")
-	return st
+		return {}
+	return st as Dictionary
 
 
 func player() -> Dictionary:
-	return state()["player"]
+	return state()["player"] as Dictionary
 
 
 func enemies() -> Array:
-	return state()["zone"].get("enemies", [])
+	var z: Dictionary = state()["zone"] as Dictionary
+	return z.get("enemies", []) as Array
 
 
 func find_enemy(eid: String) -> Dictionary:
-	for e in enemies():
-		if str(e.get("id", "")) == eid:
-			return e
+	for e_var: Variant in enemies():
+		if e_var is Dictionary:
+			var e: Dictionary = e_var
+			if str(e.get("id", "")) == eid:
+				return e
 	return {}
 
 
 ## Chase enemy `eid` with bump attacks for up to `steps` turns.
 ## Returns true when the enemy died or took damage.
 func chase_and_fight(eid: String, steps: int) -> bool:
-	var start_hp := int(player().get("hp", 0))
+	var start_hp := _as_int(player().get("hp", 0))
 	var hurt_or_kill := false
-	for i in steps:
+	for i: int in steps:
 		var e := find_enemy(eid)
 		if e.is_empty():
 			kills_seen += 1
 			return true
-		if int(e.get("hp", 0)) < int(e.get("maxHp", 0)):
+		if _as_int(e.get("hp", 0)) < _as_int(e.get("maxHp", 0)):
 			damage_seen = true
 			hurt_or_kill = true
 		var p := player()
-		var dx: int = int(e["x"]) - int(p["x"])
-		var dy: int = int(e["y"]) - int(p["y"])
+		var dx: int = _as_int(e["x"]) - _as_int(p["x"])
+		var dy: int = _as_int(e["y"]) - _as_int(p["y"])
 		if absi(dx) + absi(dy) == 1:
-			s.move_player(signi(dx), signi(dy)) # bump = attack
+			s.call("move_player", signi(dx), signi(dy)) # bump = attack
 		elif absi(dx) >= absi(dy):
-			var ev: String = str(s.move_player(signi(dx), 0))
-			if int(player()["x"]) == int(p["x"]) and signi(dy) != 0:
-				s.move_player(0, signi(dy))
+			var ev: String = str(s.call("move_player", signi(dx), 0))
+			if _as_int(player()["x"]) == _as_int(p["x"]) and signi(dy) != 0:
+				s.call("move_player", 0, signi(dy))
 			if ev == "player_died":
 				break
 		else:
-			var ev2: String = str(s.move_player(0, signi(dy)))
-			if int(player()["y"]) == int(p["y"]) and signi(dx) != 0:
-				s.move_player(signi(dx), 0)
+			var ev2: String = str(s.call("move_player", 0, signi(dy)))
+			if _as_int(player()["y"]) == _as_int(p["y"]) and signi(dx) != 0:
+				s.call("move_player", signi(dx), 0)
 			if ev2 == "player_died":
 				break
-		if int(player().get("hp", 0)) < start_hp:
+		if _as_int(player().get("hp", 0)) < start_hp:
 			player_hurt = true
 		var e2 := find_enemy(eid)
 		if e2.is_empty():
 			kills_seen += 1
 			return true
-		if int(e2.get("hp", 0)) < int(e2.get("maxHp", 0)):
+		if _as_int(e2.get("hp", 0)) < _as_int(e2.get("maxHp", 0)):
 			damage_seen = true
 			hurt_or_kill = true
 	return hurt_or_kill
@@ -100,121 +117,131 @@ func _initialize() -> void:
 		return
 
 	# --- 1. New game -------------------------------------------------------
-	s.new_game("Playtest", "Vanguard", 20261120)
+	s.call("new_game", "Playtest", "Vanguard", 20261120)
 	var st := state()
-	if str(st["zone"]["id"]) != "oakhaven":
-		fail("new game should start in oakhaven, got " + str(st["zone"]["id"]))
+	var zone_d: Dictionary = st["zone"] as Dictionary
+	if str(zone_d["id"]) != "oakhaven":
+		fail("new game should start in oakhaven, got " + str(zone_d["id"]))
 		return
 	var comp: Variant = player().get("companion", null)
-	if comp is Dictionary and not comp.is_empty():
-		print("PLAYTEST companion: ", str(comp.get("name", "?")), " kind=", str(comp.get("kind", "?")))
+	if comp is Dictionary and not (comp as Dictionary).is_empty():
+		var comp_d: Dictionary = comp
+		print("PLAYTEST companion: ", str(comp_d.get("name", "?")), " kind=", str(comp_d.get("kind", "?")))
 	else:
 		notes.append("Vanguard new game has no companion in state_json")
 
 	# --- 2. Overworld: fight the fixed Blight Rat at (9,17) ----------------
-	s.debug_warp("overworld", 8, 17)
+	s.call("debug_warp", "overworld", 8, 17)
 	st = state()
-	if str(st["zone"]["id"]) != "overworld":
+	zone_d = st["zone"] as Dictionary
+	if str(zone_d["id"]) != "overworld":
 		fail("warp to overworld failed")
 		return
 	var rat: Dictionary = {}
-	for e in enemies():
-		if str(e.get("archetype", "")) == "plague_rat":
-			rat = e
-			break
+	for e_var: Variant in enemies():
+		if e_var is Dictionary:
+			var e: Dictionary = e_var
+			if str(e.get("archetype", "")) == "plague_rat":
+				rat = e
+				break
 	if rat.is_empty():
 		fail("no plague_rat in overworld state (archetype field missing or no rat)")
 		return
-	print("PLAYTEST rat: id=", str(rat["id"]), " hp=", int(rat["hp"]), "/", int(rat["maxHp"]),
-		" at ", int(rat["x"]), ",", int(rat["y"]))
+	print("PLAYTEST rat: id=", str(rat["id"]), " hp=", _as_int(rat["hp"]), "/", _as_int(rat["maxHp"]),
+		" at ", _as_int(rat["x"]), ",", _as_int(rat["y"]))
 	if not chase_and_fight(str(rat["id"]), 80):
 		fail("could not damage or kill the overworld Blight Rat in 80 turns")
 		return
 	print("PLAYTEST rat fight done: damage_seen=", damage_seen, " kills=", kills_seen,
-		" player_hurt=", player_hurt, " player_hp=", int(player()["hp"]))
+		" player_hurt=", player_hurt, " player_hp=", _as_int(player()["hp"]))
 
 	# --- 3. Dungeon 1: fight the first enemy found --------------------------
-	s.debug_warp("dungeon_1", -1, -1)
+	s.call("debug_warp", "dungeon_1", -1, -1)
 	st = state()
-	if str(st["zone"]["id"]) != "dungeon_1":
-		fail("warp to dungeon_1 failed, got " + str(st["zone"]["id"]))
+	zone_d = st["zone"] as Dictionary
+	if str(zone_d["id"]) != "dungeon_1":
+		fail("warp to dungeon_1 failed, got " + str(zone_d["id"]))
 		return
 	var foes := enemies()
 	if foes.is_empty():
 		fail("dungeon_1 has no enemies")
 		return
 	var archs: Array[String] = []
-	for e in foes:
-		archs.append(str(e.get("archetype", "?")))
+	for e_var: Variant in foes:
+		if e_var is Dictionary:
+			var e: Dictionary = e_var
+			archs.append(str(e.get("archetype", "?")))
 	print("PLAYTEST dungeon_1 enemies: ", foes.size(), " archetypes=", archs)
-	var target: Dictionary = foes[0]
+	var target: Dictionary = foes[0] as Dictionary
 	# Stand next to the target first (try its four neighbours).
 	var p0 := player()
-	for d in [[-1, 0], [1, 0], [0, -1], [0, 1]]:
-		s.debug_warp("dungeon_1", int(target["x"]) + int(d[0]), int(target["y"]) + int(d[1]))
+	var dirs: Array[Vector2i] = [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]
+	for d: Vector2i in dirs:
+		s.call("debug_warp", "dungeon_1", _as_int(target["x"]) + d.x, _as_int(target["y"]) + d.y)
 		var pp := player()
-		if int(pp["x"]) == int(target["x"]) + int(d[0]) and int(pp["y"]) == int(target["y"]) + int(d[1]):
+		if _as_int(pp["x"]) == _as_int(target["x"]) + d.x and _as_int(pp["y"]) == _as_int(target["y"]) + d.y:
 			break
 	p0 = player()
 	print("PLAYTEST dungeon target: ", str(target.get("name", "?")), " (", str(target.get("archetype", "?")),
-		") player at ", int(p0["x"]), ",", int(p0["y"]))
-	var hp_before := int(player()["hp"])
+		") player at ", _as_int(p0["x"]), ",", _as_int(p0["y"]))
+	var hp_before := _as_int(player()["hp"])
 	if not chase_and_fight(str(target["id"]), 80):
 		notes.append("dungeon target took no damage in 80 turns (pathing or combat issue?)")
-	print("PLAYTEST dungeon fight done: player_hp ", hp_before, " -> ", int(player()["hp"]),
+	print("PLAYTEST dungeon fight done: player_hp ", hp_before, " -> ", _as_int(player()["hp"]),
 		" kills=", kills_seen)
 
 	# --- 4. Skills / hotbar: cast Sundering Cleave (hotbar slot 0) -----------
 	# Slots are 0-based in the bridge; targeted skills arm the aim and
 	# confirm_target() fires. Stand next to a fresh dungeon enemy and check
 	# that mana is spent or the enemy takes damage.
-	var sk: Variant = JSON.parse_string(s.skills_json())
+	var sk: Variant = JSON.parse_string(str(s.call("skills_json")))
 	if sk == null:
 		notes.append("skills_json() did not parse")
 	var foes2 := enemies()
 	if not foes2.is_empty():
-		var t2: Dictionary = foes2[0]
-		for d in [[-1, 0], [1, 0], [0, -1], [0, 1]]:
-			s.debug_warp("dungeon_1", int(t2["x"]) + int(d[0]), int(t2["y"]) + int(d[1]))
+		var t2: Dictionary = foes2[0] as Dictionary
+		for d: Vector2i in dirs:
+			s.call("debug_warp", "dungeon_1", _as_int(t2["x"]) + d.x, _as_int(t2["y"]) + d.y)
 			var pp2 := player()
-			if int(pp2["x"]) == int(t2["x"]) + int(d[0]) and int(pp2["y"]) == int(t2["y"]) + int(d[1]):
+			if _as_int(pp2["x"]) == _as_int(t2["x"]) + d.x and _as_int(pp2["y"]) == _as_int(t2["y"]) + d.y:
 				break
-		var mana0 := int(player().get("mana", player().get("mp", -1)))
-		var ehp0 := int(find_enemy(str(t2["id"])).get("hp", -1))
-		s.trigger_hotbar(0) # arms the aim (event is None by design)
-		s.cycle_target()
-		var ev_conf: String = str(s.confirm_target())
+		var mana0 := _as_int(player().get("mana", player().get("mp", -1)), -1)
+		var ehp0 := _as_int(find_enemy(str(t2["id"])).get("hp", -1), -1)
+		s.call("trigger_hotbar", 0) # arms the aim (event is None by design)
+		s.call("cycle_target")
+		var ev_conf: String = str(s.call("confirm_target"))
 		var e2 := find_enemy(str(t2["id"]))
-		var ehp1 := int(e2.get("hp", 0)) if not e2.is_empty() else 0
-		var mana1 := int(player().get("mana", player().get("mp", -1)))
+		var ehp1 := _as_int(e2.get("hp", 0)) if not e2.is_empty() else 0
+		var mana1 := _as_int(player().get("mana", player().get("mp", -1)), -1)
 		print("PLAYTEST cleave: target=", str(t2.get("name", "?")), " hp ", ehp0, " -> ", ehp1,
 			" mana ", mana0, " -> ", mana1, " confirm_event=", ev_conf)
 		if ehp1 >= ehp0 and mana1 >= mana0 and not e2.is_empty():
 			notes.append("Sundering Cleave via hotbar had no visible effect (no damage, no mana spent)")
-		s.cancel_aim()
+		s.call("cancel_aim")
 	else:
 		notes.append("no dungeon enemy left for the skill cast test")
 
 	# --- 5. Torin dialogue ----------------------------------------------------
-	s.debug_warp("oakhaven", 7, 5)
-	var ev_int: String = str(s.interact())
-	var dj: String = str(s.dialogue_json())
+	s.call("debug_warp", "oakhaven", 7, 5)
+	var ev_int: String = str(s.call("interact"))
+	var dj: String = str(s.call("dialogue_json"))
 	print("PLAYTEST interact near Torin -> ", ev_int, " dialogue_open=", dj != "null")
 	if dj == "null":
 		notes.append("interact() next to Torin did not open a dialogue")
 	else:
-		s.close_dialogue()
+		s.call("close_dialogue")
 
 	# --- 6. Completed blacksmith -> merchant stock -----------------------------
-	s.debug_set_town(12, "pondside")
-	var stock: Variant = JSON.parse_string(s.merchant_stock_json("blacksmith"))
+	s.call("debug_set_town", 12, "pondside")
+	var stock: Variant = JSON.parse_string(str(s.call("merchant_stock_json", "blacksmith")))
 	if stock == null:
 		fail("merchant_stock_json(blacksmith) did not parse after town completion")
 		return
 	var names: Array[String] = []
 	if stock is Array:
-		for it in stock:
-			if it is Dictionary:
+		for it_var: Variant in stock as Array:
+			if it_var is Dictionary:
+				var it: Dictionary = it_var
 				names.append(str(it.get("name", "?")))
 	print("PLAYTEST blacksmith stock: ", names)
 	if names.is_empty():
@@ -222,26 +249,27 @@ func _initialize() -> void:
 
 	# --- 7. Save / load round trip ----------------------------------------------
 	var dir := "/tmp/elfstory_playtest_saves"
-	for sl in [1, 2, 3]:
-		s.delete_slot(dir, sl)
-	if not s.save_game(dir, 1):
+	for sl: int in [1, 2, 3]:
+		s.call("delete_slot", dir, sl)
+	if not _as_bool(s.call("save_game", dir, 1)):
 		fail("save_game(slot 1) failed")
 		return
-	var hp_saved := int(player()["hp"])
-	if str(s.load_game(dir, 1)) != "ok":
+	var hp_saved := _as_int(player()["hp"])
+	if str(s.call("load_game", dir, 1)) != "ok":
 		fail("load_game(slot 1) failed")
 		return
-	if int(player()["hp"]) != hp_saved:
+	if _as_int(player()["hp"]) != hp_saved:
 		fail("save/load round trip changed player HP")
 		return
-	for sl in [1, 2, 3]:
-		s.delete_slot(dir, sl)
+	for sl: int in [1, 2, 3]:
+		s.call("delete_slot", dir, sl)
 	if DirAccess.dir_exists_absolute(dir):
 		DirAccess.remove_absolute(dir)
 
-	for n in notes:
+	for n: String in notes:
 		print("PLAYTEST_NOTE: ", n)
+	var final_zone: Dictionary = state()["zone"] as Dictionary
 	print("PLAYTEST_OK kills=", kills_seen, " damage_seen=", damage_seen,
 		" player_hurt=", player_hurt, " notes=", notes.size(),
-		" final_zone=", str(state()["zone"]["id"]))
+		" final_zone=", str(final_zone["id"]))
 	quit(0)

@@ -369,3 +369,8 @@ and glTF inspection rather than assumed:
 
 ## Shared gamedev-pipeline incorporated (Nov 23, 2026)
 - Linked `/Users/gerth/Projects/gamedev-pipeline/AGENT_RULES.md` and `/Users/gerth/Projects/gamedev-pipeline/tools/godot_verify.sh godot` in `AGENTS.md`, updated the V2 asset workflow notes to match `tools/blender_decimate_source.py` / `tools/ASSET_GATE.md`, tracked `godot/playtest_check.gd.uid`, and backfilled `docs/asset_provenance.csv` for all 16 shipped figures, 4 landmarks, portraits, app icon, and Kenney CC0 audio packs. Verified `cargo test` 107/107 and `godot_verify.sh godot` (`ALL GREEN`).
+
+## Strict GDScript typing (branch `chore/strict-gdscript-typing`, Nov 23, 2026)
+- Enabled `gamedev-pipeline/templates/project_godot_typing.txt` in `godot/project.godot` (`untyped_declaration`, `unsafe_property_access`, `unsafe_method_access`, `unsafe_call_argument`, `unassigned_variable` promoted to Error).
+- Fixed all typing errors across all 6 GDScript files (`Main.gd`, `title_screen.gd`, `grass.gd`, `juice.gd`, `run1_check.gd`, `playtest_check.gd`): explicit `ElfStorySession`/`Juice`/`TitleScreen` types, typed `for` iterators, `_as_int`/`_as_float`/`_as_bool` Variant boundary helpers, `roundi`/`floori`/`ceili`, and `session.call(...)` in headless check scripts to preserve the missing-`.dylib` guard.
+- Verified after final code edit: `cargo test` 107/107, `godot_verify.sh godot` (`ALL GREEN`: import, 6/6 parse, `playtest_check.gd`, `run1_check.gd`), plus live windowed captures of Oakhaven and the title screen (`err=0`). Pending Garth's go to commit/merge into `main`.

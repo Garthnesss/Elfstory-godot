@@ -41,7 +41,7 @@ const DIFFICULTIES := [
 	{"id": "hardened", "label": "Hardened", "blurb": "Foes are tougher and hit harder; XP flows 10% faster as compensation."},
 ]
 
-var session: Object
+var session: ElfStorySession
 var save_dir := ""
 var active_slot := 1
 var selected_class := "Vanguard"
@@ -60,7 +60,7 @@ var slots_box: VBoxContainer
 var summaries := {} # slot -> Dictionary
 
 
-func setup(p_session: Object, p_save_dir: String) -> void:
+func setup(p_session: ElfStorySession, p_save_dir: String) -> void:
 	session = p_session
 	save_dir = p_save_dir
 
@@ -89,8 +89,8 @@ func _ready() -> void:
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for side in ["left", "right"]:
-		margin.add_theme_constant_override("margin_" + side, 44)
+	for side: String in ["left", "right"]:
+		margin.add_theme_constant_override(StringName("margin_" + side), 44)
 	margin.add_theme_constant_override("margin_top", 26)
 	margin.add_theme_constant_override("margin_bottom", 18)
 	add_child(margin)
@@ -146,7 +146,7 @@ func _build_left() -> Control:
 	grid.add_theme_constant_override("h_separation", 8)
 	grid.add_theme_constant_override("v_separation", 6)
 	col.add_child(grid)
-	for c in CLASSES:
+	for c: Dictionary in CLASSES:
 		var b := _choice_button("%s  %s\n%s" % [c["glyph"], c["id"], c["focus"]])
 		b.custom_minimum_size = Vector2(250, 46)
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -164,7 +164,7 @@ func _build_left() -> Control:
 	var drow := HBoxContainer.new()
 	drow.add_theme_constant_override("separation", 8)
 	col.add_child(drow)
-	for d in DIFFICULTIES:
+	for d: Dictionary in DIFFICULTIES:
 		var b := _choice_button(str(d["label"]))
 		b.custom_minimum_size = Vector2(110, 34)
 		b.pressed.connect(_select_difficulty.bind(str(d["id"])))
@@ -203,12 +203,13 @@ func _build_slots() -> Control:
 
 ## Re-read the three slot summaries and redraw the cards.
 func refresh_slots() -> void:
-	for slot in [1, 2, 3]:
-		var parsed: Variant = JSON.parse_string(session.save_summary_json(save_dir, slot))
+	for slot: int in [1, 2, 3]:
+		var raw_json: String = session.save_summary_json(save_dir, slot)
+		var parsed: Variant = JSON.parse_string(raw_json)
 		summaries[slot] = parsed if parsed is Dictionary else {"status": "empty"}
-	for c in slots_box.get_children():
+	for c: Node in slots_box.get_children():
 		c.queue_free()
-	for slot in [1, 2, 3]:
+	for slot: int in [1, 2, 3]:
 		slots_box.add_child(_slot_card(slot))
 	_update_start_label()
 
@@ -226,8 +227,8 @@ func _slot_card(slot: int) -> Control:
 	var m := MarginContainer.new()
 	m.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	m.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for side in ["left", "right", "top", "bottom"]:
-		m.add_theme_constant_override("margin_" + side, 10)
+	for side: String in ["left", "right", "top", "bottom"]:
+		m.add_theme_constant_override(StringName("margin_" + side), 10)
 	card.add_child(m)
 	var box := VBoxContainer.new()
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -261,9 +262,9 @@ func _slot_card(slot: int) -> Control:
 	var detail := ""
 	if status == "ok" or status == "dead":
 		detail = "Lv %d · %s · %s · %d slain · %s" % [
-			int(sum.get("level", 1)), _class_name(str(sum.get("starterClass", ""))),
-			str(sum.get("zone", "?")), int(sum.get("kills", 0)), str(sum.get("difficulty", "Standard"))]
-		var cyc := int(sum.get("ngPlusCycle", 0))
+			_as_int(sum.get("level", 1), 1), _class_name(str(sum.get("starterClass", ""))),
+			str(sum.get("zone", "?")), _as_int(sum.get("kills", 0), 0), str(sum.get("difficulty", "Standard"))]
+		var cyc := _as_int(sum.get("ngPlusCycle", 0), 0)
 		if cyc > 0:
 			detail += " · Cycle %d" % cyc
 	elif sum.has("message") and sum["message"] != null:
@@ -305,23 +306,28 @@ func _select_slot(slot: int) -> void:
 
 func _select_class(id: String) -> void:
 	selected_class = id
-	for i in CLASSES.size():
-		_set_choice(class_buttons[i], CLASSES[i]["id"] == id)
-		if CLASSES[i]["id"] == id:
-			class_lore.text = CLASSES[i]["lore"]
-			class_stats.text = CLASSES[i]["stats"]
+	for i: int in CLASSES.size():
+		var entry: Dictionary = CLASSES[i]
+		var matched := str(entry["id"]) == id
+		_set_choice(class_buttons[i], matched)
+		if matched:
+			class_lore.text = str(entry["lore"])
+			class_stats.text = str(entry["stats"])
 
 
 func _select_difficulty(id: String) -> void:
 	selected_difficulty = id
-	for i in DIFFICULTIES.size():
-		_set_choice(diff_buttons[i], DIFFICULTIES[i]["id"] == id)
-		if DIFFICULTIES[i]["id"] == id:
-			diff_blurb.text = DIFFICULTIES[i]["blurb"]
+	for i: int in DIFFICULTIES.size():
+		var entry: Dictionary = DIFFICULTIES[i]
+		var matched := str(entry["id"]) == id
+		_set_choice(diff_buttons[i], matched)
+		if matched:
+			diff_blurb.text = str(entry["blurb"])
 
 
 func _update_start_label() -> void:
-	var occupied := str(summaries.get(active_slot, {}).get("status", "empty")) != "empty"
+	var sum: Dictionary = summaries.get(active_slot, {})
+	var occupied := str(sum.get("status", "empty")) != "empty"
 	if confirm_replace:
 		start_button.text = "Replace Slot %d? Click again" % active_slot
 	elif occupied:
@@ -334,7 +340,8 @@ func _update_start_label() -> void:
 ## slot takes a second, confirming click (as in the web version).
 func _on_start() -> void:
 	ui_click.emit()
-	var occupied := str(summaries.get(active_slot, {}).get("status", "empty")) != "empty"
+	var sum: Dictionary = summaries.get(active_slot, {})
+	var occupied := str(sum.get("status", "empty")) != "empty"
 	if occupied and not confirm_replace:
 		confirm_replace = true
 		_update_start_label()
@@ -363,17 +370,26 @@ func _on_delete(slot: int) -> void:
 ## Shown on the slot card when its save can't be loaded after all.
 func show_slot_error(slot: int, message: String) -> void:
 	summaries[slot] = {"status": "corrupt", "message": message}
-	for c in slots_box.get_children():
+	for c: Node in slots_box.get_children():
 		c.queue_free()
-	for s in [1, 2, 3]:
+	for s: int in [1, 2, 3]:
 		slots_box.add_child(_slot_card(s))
 
 
 func _class_name(raw: String) -> String:
-	for c in CLASSES:
+	for c: Dictionary in CLASSES:
 		if raw.to_lower().contains(str(c["id"]).to_lower()):
 			return str(c["id"])
 	return raw if raw != "" else "?"
+
+
+func _as_int(v: Variant, fallback: int = 0) -> int:
+	if v is int:
+		return v
+	if v is float:
+		var vf: float = v
+		return int(vf)
+	return fallback
 
 
 # --- small UI helpers -------------------------------------------------------
@@ -412,7 +428,7 @@ func _set_choice(b: Button, on: bool) -> void:
 
 
 func _style_button(b: Button, bg: Color, border: Color, hover_bg: Color) -> void:
-	for st in ["normal", "hover", "pressed", "focus"]:
+	for st: String in ["normal", "hover", "pressed", "focus"]:
 		var sb := StyleBoxFlat.new()
 		sb.bg_color = hover_bg if st == "hover" or st == "pressed" else bg
 		if st == "focus":
@@ -424,10 +440,10 @@ func _style_button(b: Button, bg: Color, border: Color, hover_bg: Color) -> void
 		sb.content_margin_right = 12
 		sb.content_margin_top = 6
 		sb.content_margin_bottom = 6
-		b.add_theme_stylebox_override(st, sb)
+		b.add_theme_stylebox_override(StringName(st), sb)
 
 
-func _gradient(from: Vector2, to: Vector2, colors: Array) -> TextureRect:
+func _gradient(from: Vector2, to: Vector2, colors: Array[Color]) -> TextureRect:
 	var g := Gradient.new()
 	g.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
 	g.colors = PackedColorArray(colors)

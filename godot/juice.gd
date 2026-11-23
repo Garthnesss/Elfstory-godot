@@ -103,7 +103,7 @@ func number(parent: Node3D, at: Vector3, text: String, color: Color, big := fals
 func hit_stop(duration: float) -> void:
 	_stops += 1
 	Engine.time_scale = 0.08
-	get_tree().create_timer(duration, true, false, true).timeout.connect(func():
+	get_tree().create_timer(duration, true, false, true).timeout.connect(func() -> void:
 		_stops -= 1
 		if _stops <= 0:
 			_stops = 0
@@ -129,7 +129,10 @@ func shake_offset(delta: float) -> Vector2:
 func snap() -> void:
 	_stops = 0
 	Engine.time_scale = 1.0
-	for t in tweens:
+	var kept: Array[Tween] = []
+	for t: Tween in tweens:
 		if t != null and t.is_valid() and t.is_running():
 			t.custom_step(10.0)
-	tweens = tweens.filter(func(t): return t != null and t.is_valid() and t.is_running())
+			if t.is_valid() and t.is_running():
+				kept.append(t)
+	tweens = kept

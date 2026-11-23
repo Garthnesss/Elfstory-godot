@@ -72,7 +72,7 @@ const SFX_VOICES := 6
 const SLASH_SCALE := 0.55 # slash.tscn spans ~3 units; tiles are 1
 const SPARKLE_SECONDS := 0.8
 
-var session: Object # ElfStorySession (GDExtension class)
+var session: ElfStorySession
 var state: Dictionary = {}
 
 var current_zone_id := ""
@@ -100,7 +100,7 @@ var pending_numbers: Dictionary = {} # "x,y" -> damage taken this action
 var cue_queue: Array = [] # [{"t": seconds until play, "cue": Dictionary}]
 const CUE_STAGGER := 0.11 # gap between consecutive blows in one turn
 const Juice := preload("res://juice.gd")
-var juice: Node
+var juice: Juice
 
 var cam_yaw := 0.0 # radians, snapped to 90-degree steps by [ and ]
 var chase_mode := false # false = Overhead Tactical, true = Chase (V toggles)
@@ -135,7 +135,7 @@ var aim_marker: MeshInstance3D
 var telegraph_root: Node3D
 var prompt_open := false
 const TitleScreen := preload("res://title_screen.gd")
-var title_screen = null # full-screen title (title_screen.gd); null once a game is picked
+var title_screen: TitleScreen = null # full-screen title (title_screen.gd); null once a game is picked
 var active_slot := 1 # save slot (1-3) autosave writes to
 var save_dir_override := "" # dev: --elfstory-save-dir=<abs path>
 var saving_enabled := true # off in --elfstory-capture smoke runs
@@ -167,7 +167,7 @@ func _ready() -> void:
 	aim_marker = make_tile_marker(Color(1.0, 0.85, 0.25, 0.75), 0.06)
 	aim_marker.visible = false
 	add_child(aim_marker)
-	for i in SFX_VOICES:
+	for i: int in SFX_VOICES:
 		var ap := AudioStreamPlayer.new()
 		add_child(ap)
 		sfx_players.append(ap)
@@ -177,7 +177,7 @@ func _ready() -> void:
 	session = ElfStorySession.new()
 	session.new_game("Garth", "Vanguard", 20261120)
 	var force_title := false
-	for arg in OS.get_cmdline_user_args():
+	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--elfstory-capture="):
 			saving_enabled = false # smoke runs never touch the player's save
 		elif arg == "--elfstory-show-title":
@@ -193,12 +193,12 @@ func _ready() -> void:
 ## Smoke test for exported builds: `ElfStory -- --elfstory-capture=/abs/shot.png`
 ## renders ~2 s of Oakhaven, saves the frame and quits. No effect otherwise.
 func _maybe_smoke_capture() -> void:
-	for arg in OS.get_cmdline_user_args():
+	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--elfstory-capture="):
 			var path := arg.trim_prefix("--elfstory-capture=")
 			# Dev-only framing for captures: --elfstory-warp=<zone>[,x,y]
 			# (debug builds) and --elfstory-chase for the chase camera.
-			for a in OS.get_cmdline_user_args():
+			for a: String in OS.get_cmdline_user_args():
 				if a == "--elfstory-chase":
 					chase_mode = true
 				elif a.begins_with("--elfstory-warp=") and session.has_method("debug_warp"):
@@ -233,10 +233,10 @@ func _maybe_smoke_capture() -> void:
 ## entities and panels refresh every time.
 func refresh() -> void:
 	var parsed: Variant = JSON.parse_string(session.state_json())
-	if parsed == null:
+	if not (parsed is Dictionary):
 		push_warning("ElfStory: state_json() did not parse")
 		return
-	state = parsed
+	state = parsed as Dictionary
 
 	update_hud()
 	update_log()
@@ -290,7 +290,7 @@ func do_move(screen_dir: Vector2i) -> void:
 	handle_event(ev)
 	refresh()
 	var after: Dictionary = state.get("player", {})
-	if int(after.get("x", 0)) != int(before.get("x", 0)) or int(after.get("y", 0)) != int(before.get("y", 0)):
+	if _as_int(after.get("x", 0)) != _as_int(before.get("x", 0)) or _as_int(after.get("y", 0)) != _as_int(before.get("y", 0)):
 		play_step()
 
 
@@ -309,7 +309,7 @@ func screen_dir_to_world(sd: Vector2i) -> Vector2i:
 	var fwd := Vector2(-rotated.x, -rotated.z).normalized() # away from camera, tile (x, y)
 	var right := Vector2(-fwd.y, fwd.x) # screen right, tile (x, y)
 	var w := right * float(sd.x) + fwd * float(sd.y)
-	return Vector2i(int(round(w.x)), int(round(w.y)))
+	return Vector2i(roundi(w.x), roundi(w.y))
 
 
 # ---------------------------------------------------------------------------
@@ -333,24 +333,26 @@ const ZONE_MOODS := {
 
 func apply_zone_mood(zone_id: String) -> void:
 	var key := "surface"
-	for k in ["dungeon", "barrow", "mire", "frost"]:
+	for k: String in ["dungeon", "barrow", "mire", "frost"]:
 		if zone_id.begins_with(k + "_"):
 			key = k
 	var m: Array = ZONE_MOODS[key]
-	sun.light_color = m[0]
-	sun.light_energy = m[1]
-	sun.rotation_degrees = Vector3(m[2], -45.0, 0.0)
-	var env: Environment = $WorldEnvironment.environment
-	env.ambient_light_color = m[3]
-	env.ambient_light_energy = m[4]
-	env.fog_light_color = m[5]
-	env.fog_density = m[6]
+	sun.light_color = m[0] as Color
+	sun.light_energy = _as_float(m[1], 1.0)
+	sun.rotation_degrees = Vector3(_as_float(m[2], -45.0), -45.0, 0.0)
+	var we: WorldEnvironment = $WorldEnvironment as WorldEnvironment
+	var env: Environment = we.environment
+	env.ambient_light_color = m[3] as Color
+	env.ambient_light_energy = _as_float(m[4], 0.5)
+	env.fog_light_color = m[5] as Color
+	env.fog_density = _as_float(m[6], 0.001)
 	mood_floor = m[7]
 	mood_wall = m[8]
 
 
 func rebuild_world() -> void:
-	apply_zone_mood(str(state["zone"]["id"]))
+	var zone_obj: Dictionary = state["zone"]
+	apply_zone_mood(str(zone_obj["id"]))
 	clear_children(terrain_root)
 	clear_children(landmarks_root)
 	cutaway_mat = null
@@ -358,7 +360,7 @@ func rebuild_world() -> void:
 
 	var zone: Dictionary = state["zone"]
 	var tiles: Array = zone["tiles"]
-	var is_town := bool(zone.get("isTown", false))
+	var is_town := _as_bool(zone.get("isTown", false))
 	var placements := fetch_placements()
 
 	# GUARDRAIL: tiles under a placed model's hideTerrainFootprint are never
@@ -366,23 +368,25 @@ func rebuild_world() -> void:
 	# the tiles back. Keyed "x,y" in tile coords (footprint z == tile y).
 	var covered := {}
 	if str(zone["id"]) == "oakhaven":
-		for p in placements:
+		for p_var: Variant in placements:
+			var p: Dictionary = p_var as Dictionary
 			if p.has("hideTerrainFootprint"):
 				var f: Dictionary = p["hideTerrainFootprint"]
-				for tx in range(int(f["minX"]), int(f["maxX"]) + 1):
-					for tz in range(int(f["minZ"]), int(f["maxZ"]) + 1):
+				for tx: int in range(_as_int(f["minX"]), _as_int(f["maxX"]) + 1):
+					for tz: int in range(_as_int(f["minZ"]), _as_int(f["maxZ"]) + 1):
 						covered["%d,%d" % [tx, tz]] = true
 
 	var used := {}
-	for u in zone.get("usedTiles", []):
-		used["%d,%d" % [int(u[0]), int(u[1])]] = true
+	for u_var: Variant in (zone.get("usedTiles", []) as Array):
+		var u: Array = u_var as Array
+		used["%d,%d" % [_as_int(u[0]), _as_int(u[1])]] = true
 
 	grass_zone = GRASS_ZONES.has(str(zone["id"]))
 	var flat_items: Array = []
 	var tall_items: Array = []
-	for y in tiles.size():
+	for y: int in tiles.size():
 		var row: Array = tiles[y]
-		for x in row.size():
+		for x: int in row.size():
 			if covered.has("%d,%d" % [x, y]):
 				continue
 			var kind := str(row[x])
@@ -401,13 +405,14 @@ func rebuild_world() -> void:
 
 	var grass_skip := covered.duplicate()
 	if str(zone["id"]) == "oakhaven":
-		for p in placements:
+		for p_var: Variant in placements:
+			var p: Dictionary = p_var as Dictionary
 			if str(p.get("url", "")).begins_with("procedural://"):
-				var hw := float(p.get("targetWidthTiles", 2.0)) * 0.5
-				var px := float(p.get("x", 0.0))
-				var pz := float(p.get("z", 0.0))
-				for tx in range(int(floor(px - hw - 0.5)), int(ceil(px + hw + 0.5)) + 1):
-					for tz in range(int(floor(pz - hw - 0.5)), int(ceil(pz + hw + 0.5)) + 1):
+				var hw := _as_float(p.get("targetWidthTiles", 2.0), 2.0) * 0.5
+				var px := _as_float(p.get("x", 0.0))
+				var pz := _as_float(p.get("z", 0.0))
+				for tx: int in range(floori(px - hw - 0.5), ceili(px + hw + 0.5) + 1):
+					for tz: int in range(floori(pz - hw - 0.5), ceili(pz + hw + 0.5) + 1):
 						if absf(float(tx) - px) < hw + 0.4 and absf(float(tz) - pz) < hw + 0.4:
 							grass_skip["%d,%d" % [tx, tz]] = true
 
@@ -425,7 +430,7 @@ func rebuild_world() -> void:
 func fetch_placements() -> Array:
 	var parsed: Variant = JSON.parse_string(session.placements_json())
 	if parsed is Array:
-		return parsed
+		return parsed as Array
 	return []
 
 
@@ -440,20 +445,21 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 	mm.use_custom_data = true # r = 1: wall fully enclosed by wall (dark rock cap)
 	var wall_set := {}
 	if tall and not is_town:
-		for it in items:
+		for it_var: Variant in items:
+			var it: Dictionary = it_var as Dictionary
 			if str(it["kind"]) == "wall":
-				wall_set["%d,%d" % [int(it["x"]), int(it["y"])]] = true
+				wall_set["%d,%d" % [_as_int(it["x"]), _as_int(it["y"])]] = true
 	var box := BoxMesh.new()
 	box.size = Vector3.ONE
 	mm.mesh = box
 	mm.instance_count = items.size()
-	for i in items.size():
-		var it: Dictionary = items[i]
+	for i: int in items.size():
+		var it: Dictionary = items[i] as Dictionary
 		var kind := str(it["kind"])
 		var h := 1.0
 		var bottom := -1.0
 		if tall:
-			h = float(TALL_HEIGHTS[kind])
+			h = _as_float(TALL_HEIGHTS[kind], 1.0)
 		else:
 			var fb := flat_box(kind)
 			h = fb.x
@@ -461,18 +467,20 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 		# Small gaps between boxes draw the tile grid; meadow floor closes
 		# them so the grass reads as one field (Garth, Nov 21).
 		var enclosed := 0.0
-		if wall_set.has("%d,%d" % [int(it["x"]), int(it["y"])]):
+		var ix := _as_int(it["x"])
+		var iy := _as_int(it["y"])
+		if wall_set.has("%d,%d" % [ix, iy]):
 			enclosed = 1.0
-			for oy in range(-1, 2):
-				for ox in range(-1, 2):
-					if not wall_set.has("%d,%d" % [int(it["x"]) + ox, int(it["y"]) + oy]):
+			for oy: int in range(-1, 2):
+				for ox: int in range(-1, 2):
+					if not wall_set.has("%d,%d" % [ix + ox, iy + oy]):
 						enclosed = 0.0
 		var gap := 1.0 if ((grass_zone and kind == "floor") or enclosed > 0.0) else 0.97
 		var basis := Basis.from_scale(Vector3(gap, h, gap))
-		var origin := Vector3(float(it["x"]), bottom + h * 0.5, float(it["y"]))
+		var origin := Vector3(float(ix), bottom + h * 0.5, float(iy))
 		mm.set_instance_transform(i, Transform3D(basis, origin))
 		var c := tile_color(kind, is_town)
-		if bool(it.get("used", false)):
+		if _as_bool(it.get("used", false)):
 			c = c.darkened(0.45) # looted chest / spent brazier / attuned waystone
 		mm.set_instance_color(i, c)
 		mm.set_instance_custom_data(i, Color(enclosed, 0.0, 0.0, 0.0))
@@ -502,10 +510,10 @@ func flat_box(kind: String) -> Vector2:
 
 
 func tile_color(kind: String, is_town: bool) -> Color:
-	if kind == "floor" and mood_floor != null:
-		return mood_floor
-	if kind == "wall" and mood_wall != null:
-		return mood_wall
+	if kind == "floor" and mood_floor is Color:
+		return mood_floor as Color
+	if kind == "wall" and mood_wall is Color:
+		return mood_wall as Color
 	match kind:
 		"floor":
 			if grass_zone:
@@ -583,11 +591,12 @@ func build_water(tiles: Array, is_town: bool, covered: Dictionary) -> void:
 ## placeholder box when a model file is missing.
 func build_landmarks(placements: Array) -> void:
 	forge_lights.clear()
-	for p in placements:
+	for p_var: Variant in placements:
+		var p: Dictionary = p_var as Dictionary
 		var url := str(p.get("url", ""))
 		var fname := url.get_file()
-		var target := float(p.get("targetWidthTiles", 3.0))
-		var y_off := float(p.get("yOffset", 0.0))
+		var target := _as_float(p.get("targetWidthTiles", 3.0), 3.0)
+		var y_off := _as_float(p.get("yOffset", 0.0))
 		var node: Node3D = null
 		if url == "procedural://cold_forge_ruin":
 			node = make_cold_forge_ruin(target)
@@ -598,9 +607,9 @@ func build_landmarks(placements: Array) -> void:
 		else:
 			var path := "res://assets/models/" + fname
 			if fname != "" and ResourceLoader.exists(path):
-				var packed: Variant = load(path)
-				if packed != null:
-					node = packed.instantiate()
+				var packed: Resource = load(path)
+				if packed is PackedScene:
+					node = (packed as PackedScene).instantiate() as Node3D
 					var aabb := scene_aabb(node)
 					var w := maxf(aabb.size.x, aabb.size.z)
 					if w > 0.01:
@@ -609,33 +618,36 @@ func build_landmarks(placements: Array) -> void:
 						y_off += -aabb.position.y * s # rest the model's base on y = 0
 		if node == null:
 			node = make_placeholder(str(p.get("id", fname)), target)
-		node.position = Vector3(float(p["x"]), y_off, float(p["z"]))
+		var px := _as_float(p["x"])
+		var pz := _as_float(p["z"])
+		node.position = Vector3(px, y_off, pz)
 		if p.has("rotationY"):
-			node.rotation.y = float(p["rotationY"])
+			node.rotation.y = _as_float(p["rotationY"])
 		landmarks_root.add_child(node)
 		if url != "procedural://village_field":
-			add_ground_skirt(Vector3(float(p["x"]), 0.0, float(p["z"])), target, node.rotation.y)
+			add_ground_skirt(Vector3(px, 0.0, pz), target, node.rotation.y)
 		if p.get("light") != null:
-			var ld: Dictionary = p["light"]
+			var ld: Dictionary = p["light"] as Dictionary
 			var omni := OmniLight3D.new()
-			var col := int(ld.get("color", 0xffffff))
+			var col := _as_int(ld.get("color", 0xffffff), 0xffffff)
 			omni.light_color = Color(
 				float((col >> 16) & 0xff) / 255.0,
 				float((col >> 8) & 0xff) / 255.0,
 				float(col & 0xff) / 255.0)
-			omni.light_energy = float(ld.get("intensity", 2.0))
+			omni.light_energy = _as_float(ld.get("intensity", 2.0), 2.0)
 			omni.set_meta("base_energy", omni.light_energy)
-			omni.omni_range = float(ld.get("distance", 6.0))
+			omni.omni_range = _as_float(ld.get("distance", 6.0), 6.0)
 			omni.omni_attenuation = 1.2
-			var off: Array = ld.get("offset", [0.0, 1.0, 0.0])
+			var off: Array = ld.get("offset", [0.0, 1.0, 0.0]) as Array
 			# TS authored offsets in three.js handedness; Godot x runs the other way.
-			var local := Vector3(-float(off[0]), float(off[1]), float(off[2]))
+			var local := Vector3(-_as_float(off[0]), _as_float(off[1]), _as_float(off[2]))
 			omni.position = node.position + local.rotated(Vector3.UP, node.rotation.y)
 			landmarks_root.add_child(omni)
 			if col == 0xff8c2b:
 				forge_lights.append(omni)
 
-	if not bool(state.get("town", {}).get("blacksmithComplete", false)):
+	var town_dict: Dictionary = state.get("town", {}) as Dictionary
+	if not _as_bool(town_dict.get("blacksmithComplete", false)):
 		build_lot_markers()
 
 
@@ -750,8 +762,8 @@ func make_village_cottage(target: float) -> Node3D:
 	_add_part_box(root, Vector3(target, 0.28, d + 0.24), Vector3(0.0, 0.14, 0.0), stone)
 	# Cream plaster cabin + corner timber posts
 	_add_part_box(root, Vector3(w, 0.92, d), Vector3(0.0, 0.74, 0.0), plaster)
-	for sx in [-w * 0.48, w * 0.48]:
-		for sz in [-d * 0.48, d * 0.48]:
+	for sx: float in [-w * 0.48, w * 0.48]:
+		for sz: float in [-d * 0.48, d * 0.48]:
 			_add_part_box(root, Vector3(0.14, 0.96, 0.14), Vector3(sx, 0.76, sz), timber)
 	# Pitched gable roof + ridge beam + stone chimney
 	var roof_w := target * 0.96
@@ -792,21 +804,21 @@ func make_village_field(target: float) -> Node3D:
 
 
 func build_lot_markers() -> void:
-	var lots := [
+	var lots: Array[Dictionary] = [
 		{"pos": Vector3(17.5, 0.0, 13.0), "size": Vector2(3.6, 2.6), "label": "Pondside Lot ★"},
 		{"pos": Vector3(11.0, 0.0, 5.0), "size": Vector2(2.6, 2.6), "label": "Market Lot"},
 		{"pos": Vector3(4.5, 0.0, 9.5), "size": Vector2(3.2, 2.6), "label": "West Gate Lot"},
 	]
 	var stake_col := Color(0.72, 0.54, 0.24)
 	var rim_col := Color(0.92, 0.72, 0.28)
-	for entry in lots:
+	for entry: Dictionary in lots:
 		var marker := Node3D.new()
-		marker.position = entry["pos"]
-		var sz: Vector2 = entry["size"]
+		marker.position = entry["pos"] as Vector3
+		var sz: Vector2 = entry["size"] as Vector2
 		var hx := sz.x * 0.5
 		var hz := sz.y * 0.5
-		for sx in [-hx, hx]:
-			for sz_p in [-hz, hz]:
+		for sx: float in [-hx, hx]:
+			for sz_p: float in [-hz, hz]:
 				_add_part_box(marker, Vector3(0.12, 0.52, 0.12), Vector3(sx, 0.26, sz_p), stake_col)
 		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, -hz), rim_col)
 		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, hz), rim_col)
@@ -895,56 +907,62 @@ func refresh_entities() -> void:
 	pending_numbers.clear()
 	var seen := {}
 
-	player_node = _sync_actor(seen, "player", Vector3(float(pl["x"]), 0.0, float(pl["y"])), int(pl.get("hp", -1)),
+	player_node = _sync_actor(seen, "player", Vector3(_as_float(pl["x"]), 0.0, _as_float(pl["y"])), _as_int(pl.get("hp", -1), -1),
 		func() -> Node3D: return make_actor(RIM_PLAYER, 1.0, str(PLAYER_FIGURES.get(str(pl.get("starterClass", "")), "")), Color(0.30, 0.55, 1.00)))
 
-	var comp = pl.get("companion")
-	if comp is Dictionary and int(comp.get("hp", 0)) > 0 and int(comp.get("respawnCooldown", 0)) == 0:
-		var ckind := str(comp.get("kind", ""))
-		var ccol := Color(0.45, 0.72, 1.00) if ckind in ["starlight_owl", "StarlightOwl"] else Color(0.22, 0.86, 0.78)
-		var cname := str(comp.get("name", "Companion"))
-		_sync_actor(seen, "companion", Vector3(float(comp["x"]), 0.0, float(comp["y"])), int(comp.get("hp", -1)),
-			func() -> Node3D:
-				var cstem := str(COMPANION_FIGURES.get(ckind, ""))
-				var cn := make_actor(RIM_COMPANION, 1.0, cstem, ccol)
-				if figure_scene(cstem) == null:
-					add_label(cn, cname) # a capsule needs its name; a figure doesn't
-				return cn)
+	var comp_var: Variant = pl.get("companion")
+	if comp_var is Dictionary:
+		var comp: Dictionary = comp_var as Dictionary
+		if _as_int(comp.get("hp", 0)) > 0 and _as_int(comp.get("respawnCooldown", 0)) == 0:
+			var ckind := str(comp.get("kind", ""))
+			var ccol := Color(0.45, 0.72, 1.00) if ckind in ["starlight_owl", "StarlightOwl"] else Color(0.22, 0.86, 0.78)
+			var cname := str(comp.get("name", "Companion"))
+			_sync_actor(seen, "companion", Vector3(_as_float(comp["x"]), 0.0, _as_float(comp["y"])), _as_int(comp.get("hp", -1), -1),
+				func() -> Node3D:
+					var cstem := str(COMPANION_FIGURES.get(ckind, ""))
+					var cn := make_actor(RIM_COMPANION, 1.0, cstem, ccol)
+					if figure_scene(cstem) == null:
+						add_label(cn, cname) # a capsule needs its name; a figure doesn't
+					return cn)
 
-	for e in zone.get("enemies", []):
-		var boss := bool(e.get("isBoss", false))
+	for e_var: Variant in (zone.get("enemies", []) as Array):
+		var e: Dictionary = e_var as Dictionary
+		var boss := _as_bool(e.get("isBoss", false))
 		var arch := str(e.get("archetype", ""))
-		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(float(e["x"]), 0.0, float(e["y"])), int(e.get("hp", -1)),
+		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(_as_float(e["x"]), 0.0, _as_float(e["y"])), _as_int(e.get("hp", -1), -1),
 			func() -> Node3D: return make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
 				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20)))
 
-	for npc in zone.get("npcs", []):
+	for npc_var: Variant in (zone.get("npcs", []) as Array):
+		var npc: Dictionary = npc_var as Dictionary
 		var nname := str(npc["name"])
-		_sync_actor(seen, "npc:" + str(npc["id"]), Vector3(float(npc["x"]), 0.0, float(npc["y"])), -1,
+		_sync_actor(seen, "npc:" + str(npc["id"]), Vector3(_as_float(npc["x"]), 0.0, _as_float(npc["y"])), -1,
 			func() -> Node3D:
 				var n := make_actor(RIM_NPC, 1.0, "", Color(0.30, 0.85, 0.40))
 				add_label(n, nname)
 				return n)
 
-	for l in zone.get("loot", []):
-		_sync_actor(seen, "loot:%d,%d" % [int(l["x"]), int(l["y"])], Vector3(float(l["x"]), 0.0, float(l["y"])), -1,
+	for l_var: Variant in (zone.get("loot", []) as Array):
+		var l: Dictionary = l_var as Dictionary
+		_sync_actor(seen, "loot:%d,%d" % [_as_int(l["x"]), _as_int(l["y"])], Vector3(_as_float(l["x"]), 0.0, _as_float(l["y"])), -1,
 			func() -> Node3D: return make_loot_box())
 
 	# Gone from the snapshot: enemies (and a collapsing companion) wait for
 	# their kill cue to pop; everything else just goes.
-	for key in entity_nodes.keys():
+	for key_var: Variant in entity_nodes.keys():
+		var key: String = str(key_var)
 		if seen.has(key):
 			continue
-		var n: Node3D = entity_nodes[key]
-		var tgt: Vector3 = entity_targets.get(n, n.position)
+		var n: Node3D = entity_nodes[key] as Node3D
+		var tgt: Vector3 = entity_targets.get(n, n.position) as Vector3
 		entity_nodes.erase(key)
 		entity_targets.erase(n)
-		var last_hp := int(entity_hp.get(key, 0))
+		var last_hp := _as_int(entity_hp.get(key, 0))
 		entity_hp.erase(key)
-		if (str(key).begins_with("enemy:") or key == "companion") and is_instance_valid(n):
+		if (key.begins_with("enemy:") or key == "companion") and is_instance_valid(n):
 			var tk := _tile_key(tgt)
 			if last_hp > 0:
-				pending_numbers[tk] = int(pending_numbers.get(tk, 0)) + last_hp
+				pending_numbers[tk] = _as_int(pending_numbers.get(tk, 0)) + last_hp
 			dying[tk] = n
 		elif is_instance_valid(n):
 			n.queue_free()
@@ -952,24 +970,24 @@ func refresh_entities() -> void:
 
 func _sync_actor(seen: Dictionary, key: String, target: Vector3, hp: int, make: Callable) -> Node3D:
 	seen[key] = true
-	var n: Node3D = entity_nodes.get(key)
+	var n: Node3D = entity_nodes.get(key) as Node3D
 	if n == null or not is_instance_valid(n):
-		n = make.call()
+		n = make.call() as Node3D
 		n.set_meta("ekey", key)
 		_set_layer(n, 2) # ground decals skip actors
 		entities_root.add_child(n)
 		n.position = target
 		entity_nodes[key] = n
-	var old_target: Vector3 = entity_targets.get(n, target)
+	var old_target: Vector3 = entity_targets.get(n, target) as Vector3
 	if old_target != target:
 		face_actor(n, target - old_target)
 	entity_targets[n] = target
 	if hp >= 0:
 		if entity_hp.has(key):
-			var dmg := int(entity_hp[key]) - hp
+			var dmg := _as_int(entity_hp[key]) - hp
 			if dmg > 0:
 				var tk := _tile_key(target)
-				pending_numbers[tk] = int(pending_numbers.get(tk, 0)) + dmg
+				pending_numbers[tk] = _as_int(pending_numbers.get(tk, 0)) + dmg
 		entity_hp[key] = hp
 	return n
 
@@ -981,13 +999,14 @@ func _tile_key(p: Vector3) -> String:
 ## Live actor standing on (or walking to) a tile; loot never counts.
 func actor_at(tx: int, ty: int) -> Node3D:
 	var tk := "%d,%d" % [tx, ty]
-	for key in entity_nodes:
-		if str(key).begins_with("loot:"):
+	for key_var: Variant in entity_nodes:
+		var key: String = str(key_var)
+		if key.begins_with("loot:"):
 			continue
-		var n: Node3D = entity_nodes[key]
-		if _tile_key(entity_targets.get(n, n.position)) == tk:
+		var n: Node3D = entity_nodes[key] as Node3D
+		if _tile_key(entity_targets.get(n, n.position) as Vector3) == tk:
 			return n
-	return dying.get(tk)
+	return dying.get(tk) as Node3D
 
 
 func _set_layer(n: Node, layer: int) -> void:
@@ -1021,7 +1040,7 @@ func figure_scene(stem: String) -> PackedScene:
 	if not _figure_cache.has(stem):
 		var path := FIGURE_DIR + stem + ".glb"
 		_figure_cache[stem] = load(path) if ResourceLoader.exists(path) else null
-	return _figure_cache[stem]
+	return _figure_cache[stem] as PackedScene
 
 
 ## Root (lerped to the tile) -> "Body" pivot (juice transforms) ->
@@ -1067,10 +1086,10 @@ func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Co
 	body.add_child(model)
 	var packed := figure_scene(stem)
 	if packed != null:
-		var fig: Node3D = packed.instantiate()
+		var fig: Node3D = packed.instantiate() as Node3D
 		var aabb := scene_aabb(fig)
 		if aabb.size.y > 0.001:
-			var s := float(FIGURE_HEIGHT.get(stem, 1.0)) / aabb.size.y
+			var s := _as_float(FIGURE_HEIGHT.get(stem, 1.0), 1.0) / aabb.size.y
 			fig.scale = Vector3.ONE * s
 			var c := aabb.get_center()
 			fig.position = Vector3(-c.x * s, -aabb.position.y * s, -c.z * s)
@@ -1153,9 +1172,11 @@ func add_label(parent: Node3D, text: String) -> void:
 func _process(delta: float) -> void:
 	# Smooth entity movement toward their tile positions.
 	var w := minf(1.0, delta * 10.0)
-	for node in entity_targets.keys():
+	for node_var: Variant in entity_targets.keys():
+		var node: Node3D = node_var as Node3D
 		if is_instance_valid(node):
-			node.position = node.position.lerp(entity_targets[node], w)
+			var tgt: Vector3 = entity_targets[node] as Vector3
+			node.position = node.position.lerp(tgt, w)
 	_drain_cues(delta)
 	update_camera(delta)
 	update_held_movement(delta)
@@ -1195,7 +1216,7 @@ func cam_offset() -> Vector3:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed and title_screen == null:
+	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed and title_screen == null:
 		var mb := event as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 			cam_zoom = clampf(cam_zoom - 0.08, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
@@ -1468,7 +1489,7 @@ func ui_theme() -> Theme:
 	t.default_font_size = 15
 	t.set_color("font_color", "Label", UI_INK)
 	t.set_color("default_color", "RichTextLabel", UI_INK)
-	for st in ["normal", "hover", "pressed", "disabled", "focus"]:
+	for st: String in ["normal", "hover", "pressed", "disabled", "focus"]:
 		var sb := StyleBoxFlat.new()
 		match st:
 			"hover":
@@ -1488,7 +1509,7 @@ func ui_theme() -> Theme:
 		sb.content_margin_right = 10
 		sb.content_margin_top = 5
 		sb.content_margin_bottom = 5
-		t.set_stylebox(st, "Button", sb)
+		t.set_stylebox(StringName(st), &"Button", sb)
 	t.set_color("font_color", "Button", UI_INK)
 	t.set_color("font_hover_color", "Button", Color(1.0, 0.95, 0.82))
 	t.set_color("font_disabled_color", "Button", Color(UI_INK, 0.4))
@@ -1530,43 +1551,48 @@ func make_button(text: String) -> Button:
 func update_hud() -> void:
 	var zone: Dictionary = state["zone"]
 	var pl: Dictionary = state["player"]
-	var derived: Dictionary = state.get("derived", {})
+	var derived: Dictionary = state.get("derived", {}) as Dictionary
 	hud_title.text = "%s — %s" % [str(zone["name"]), str(zone.get("subtitle", ""))]
-	var max_hp := int(derived.get("maxHp", pl.get("maxHp", 1)))
-	var max_mp := int(derived.get("maxMana", pl.get("maxMana", 0)))
+	var max_hp := _as_int(derived.get("maxHp", pl.get("maxHp", 1)), 1)
+	var max_mp := _as_int(derived.get("maxMana", pl.get("maxMana", 0)))
+	var cur_hp := _as_int(pl["hp"])
+	var cur_mp := _as_int(pl["mana"])
 	hud_body.text = "HP %s %d/%d\nMP %s %d/%d\nLv %d · %d g · ATK %d · DEF %d" % [
-		text_bar(int(pl["hp"]), max_hp), int(pl["hp"]), max_hp,
-		text_bar(int(pl["mana"]), max_mp), int(pl["mana"]), max_mp,
-		int(pl["level"]), int(pl["gold"]),
-		int(derived.get("atk", 0)), int(derived.get("def", 0)),
+		text_bar(cur_hp, max_hp), cur_hp, max_hp,
+		text_bar(cur_mp, max_mp), cur_mp, max_mp,
+		_as_int(pl["level"]), _as_int(pl["gold"]),
+		_as_int(derived.get("atk", 0)), _as_int(derived.get("def", 0)),
 	]
 	var sts: PackedStringArray = []
-	for st in pl.get("statuses", []):
-		sts.append("%s %dt" % [str(st["kind"]).capitalize(), int(st["turns"])])
+	for st_var: Variant in (pl.get("statuses", []) as Array):
+		var st: Dictionary = st_var as Dictionary
+		sts.append("%s %dt" % [str(st["kind"]).capitalize(), _as_int(st["turns"])])
 	if not sts.is_empty():
 		hud_body.text += "\n" + " · ".join(sts)
-	var comp = pl.get("companion")
-	if comp is Dictionary:
+	var comp_var: Variant = pl.get("companion")
+	if comp_var is Dictionary:
+		var comp: Dictionary = comp_var as Dictionary
 		var cname := str(comp.get("name", "Companion"))
-		var cd := int(comp.get("respawnCooldown", 0))
+		var cd := _as_int(comp.get("respawnCooldown", 0))
 		if cd > 0:
 			hud_body.text += "\n%s: reforming (%dt)" % [cname, cd]
 		else:
-			hud_body.text += "\n%s %d/%d HP" % [cname, int(comp.get("hp", 0)), int(comp.get("maxHp", 0))]
-	if int(pl.get("skillPoints", 0)) > 0:
-		hud_body.text += "\n%d skill point(s) — press K" % int(pl["skillPoints"])
+			hud_body.text += "\n%s %d/%d HP" % [cname, _as_int(comp.get("hp", 0)), _as_int(comp.get("maxHp", 0))]
+	var sp := _as_int(pl.get("skillPoints", 0))
+	if sp > 0:
+		hud_body.text += "\n%d skill point(s) — press K" % sp
 
 
 func text_bar(cur: int, maxv: int, width: int = 14) -> String:
 	var filled := 0
 	if maxv > 0:
-		filled = clampi(int(round(float(cur) / float(maxv) * float(width))), 0, width)
+		filled = clampi(roundi(float(cur) / float(maxv) * float(width)), 0, width)
 	return "█".repeat(filled) + "░".repeat(width - filled)
 
 
 func update_log() -> void:
 	var lines: PackedStringArray = []
-	for l in state.get("log", []):
+	for l: Variant in (state.get("log", []) as Array):
 		lines.append(str(l))
 	log_label.text = "\n".join(lines)
 
@@ -1574,18 +1600,18 @@ func update_log() -> void:
 func rebuild_town_panel() -> void:
 	clear_children(town_box)
 	var zone: Dictionary = state["zone"]
-	if not bool(zone.get("isTown", false)):
+	if not _as_bool(zone.get("isTown", false)):
 		town_panel.hide()
 		return
 	town_panel.show()
 
-	var town: Dictionary = state.get("town", {})
-	var pieces: Array = town.get("piecesFound", [])
-	var supplies: Array = town.get("suppliesFound", [])
-	var tier := int(state.get("populationTier", 0))
-	var pop := int(town.get("population", 0))
-	var returns := int(town.get("returns", 0))
-	var stall_cleared := bool(town.get("stallItemFound", false))
+	var town: Dictionary = state.get("town", {}) as Dictionary
+	var pieces: Array = town.get("piecesFound", []) as Array
+	var supplies: Array = town.get("suppliesFound", []) as Array
+	var tier := _as_int(state.get("populationTier", 0))
+	var pop := _as_int(town.get("population", 0))
+	var returns := _as_int(town.get("returns", 0))
+	var stall_cleared := _as_bool(town.get("stallItemFound", false))
 
 	var head := make_label()
 	head.add_theme_font_size_override("font_size", 15)
@@ -1598,13 +1624,14 @@ func rebuild_town_panel() -> void:
 	summary.text = "Pieces %d/3 · Pop %d (Tier %d) · Returns %d" % [pieces.size(), pop, tier, returns]
 	town_box.add_child(summary)
 
-	var bonuses: Dictionary = state.get("townTierBonuses", {})
+	var bonuses: Dictionary = state.get("townTierBonuses", {}) as Dictionary
 	var bonus_l := make_label()
 	bonus_l.add_theme_font_size_override("font_size", 12)
 	if tier > 0:
-		var def_txt := " · +%d DEF" % int(bonuses.get("def", 0)) if int(bonuses.get("def", 0)) > 0 else ""
+		var def_b := _as_int(bonuses.get("def", 0))
+		var def_txt := " · +%d DEF" % def_b if def_b > 0 else ""
 		bonus_l.text = "Tier %d Bonus: +%d HP · +%d ATK · +%d Spell%s" % [
-			tier, int(bonuses.get("maxHp", 0)), int(bonuses.get("atk", 0)), int(bonuses.get("spellPower", 0)), def_txt]
+			tier, _as_int(bonuses.get("maxHp", 0)), _as_int(bonuses.get("atk", 0)), _as_int(bonuses.get("spellPower", 0)), def_txt]
 		bonus_l.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
 	else:
 		bonus_l.text = "Next tier at Pop 20 (+HP/ATK/Spell & village growth)"
@@ -1618,11 +1645,11 @@ func rebuild_town_panel() -> void:
 		["blacksmith_bellows", "Great Forge Bellows"],
 		["blacksmith_sign", "The Smith's Hanging Sign"],
 	]
-	for pd in piece_defs:
+	for pd: Array in piece_defs:
 		var has_p := pieces.has(pd[0])
 		var pl := make_label()
 		pl.add_theme_font_size_override("font_size", 12)
-		pl.text = "%s %s" % ["✓" if has_p else "○", pd[1]]
+		pl.text = "%s %s" % ["✓" if has_p else "○", str(pd[1])]
 		pl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_p else Color(0.66, 0.70, 0.76))
 		town_box.add_child(pl)
 
@@ -1658,13 +1685,13 @@ func rebuild_town_panel() -> void:
 		"market": "Market Green Lot",
 		"west_gate": "West Gate Lot",
 	}
-	if bool(state.get("canCompleteBlacksmith", false)):
+	if _as_bool(state.get("canCompleteBlacksmith", false)):
 		var hint := make_label()
 		hint.add_theme_font_size_override("font_size", 12)
 		hint.text = "Ready! Choose a lot to rebuild:"
 		hint.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
 		town_box.add_child(hint)
-		for lot in LOTS:
+		for lot: String in LOTS:
 			var label := str(lot_labels.get(lot, lot))
 			if lot == "pondside":
 				label += " ★ (+75g wish)"
@@ -1672,12 +1699,12 @@ func rebuild_town_panel() -> void:
 			b.add_theme_font_size_override("font_size", 12)
 			b.pressed.connect(_on_complete_blacksmith.bind(lot))
 			town_box.add_child(b)
-	elif bool(town.get("blacksmithComplete", false)):
+	elif _as_bool(town.get("blacksmithComplete", false)):
 		var cur := str(town.get("blacksmithLot", ""))
 		var at := make_label()
 		at.add_theme_font_size_override("font_size", 12)
 		at.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var wish_note := " (wish met)" if bool(town.get("wishSatisfied", false)) else ""
+		var wish_note := " (wish met)" if _as_bool(town.get("wishSatisfied", false)) else ""
 		at.text = "Forge standing: %s%s" % [str(lot_labels.get(cur, cur)), wish_note]
 		at.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
 		town_box.add_child(at)
@@ -1685,8 +1712,8 @@ func rebuild_town_panel() -> void:
 		shop_btn.add_theme_font_size_override("font_size", 13)
 		shop_btn.pressed.connect(func() -> void: open_merchant("blacksmith"))
 		town_box.add_child(shop_btn)
-		var bonus_claimed := bool(town.get("wishBonusClaimed", false))
-		for lot in LOTS:
+		var bonus_claimed := _as_bool(town.get("wishBonusClaimed", false))
+		for lot: String in LOTS:
 			if lot == cur:
 				continue
 			var label := str(lot_labels.get(lot, lot))
@@ -1707,12 +1734,12 @@ func rebuild_town_panel() -> void:
 		["mire_timber", "Mire Timber (Fungal Fl.1 → Greatbow)"],
 		["frost_coal", "Frost White-Coal (Frost Fl.1 → Greathelm)"],
 	]
-	for sd in supply_defs:
+	for sd: Array in supply_defs:
 		var has_s := supplies.has(sd[0])
 		var sl := make_label()
 		sl.add_theme_font_size_override("font_size", 11)
 		sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		sl.text = "%s %s" % ["✓" if has_s else "○", sd[1]]
+		sl.text = "%s %s" % ["✓" if has_s else "○", str(sd[1])]
 		sl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_s else Color(0.68, 0.72, 0.78))
 		town_box.add_child(sl)
 
@@ -1752,8 +1779,8 @@ func render_dialogue() -> void:
 		head += " — " + title
 	dialogue_label.text = "%s\n%s" % [head, str(node.get("text", ""))]
 	clear_children(dialogue_choices)
-	for c in node.get("choices", []):
-		var choice: Dictionary = c
+	for c_var: Variant in (node.get("choices", []) as Array):
+		var choice: Dictionary = c_var as Dictionary
 		var b := make_button(str(choice.get("label", "...")))
 		b.pressed.connect(_on_dialogue_choice.bind(str(choice.get("id", ""))))
 		dialogue_choices.add_child(b)
@@ -1796,10 +1823,10 @@ func render_prompt() -> void:
 	prompt_open = true
 	dialogue_label.text = "%s — %s\n%s" % [str(p.get("title", "")), str(p.get("subtitle", "")), str(p.get("body", ""))]
 	clear_children(dialogue_choices)
-	for o in p.get("options", []):
-		var opt: Dictionary = o
+	for o_var: Variant in (p.get("options", []) as Array):
+		var opt: Dictionary = o_var as Dictionary
 		var b := make_button(str(opt.get("label", "...")))
-		b.disabled = bool(opt.get("disabled", false))
+		b.disabled = _as_bool(opt.get("disabled", false))
 		b.pressed.connect(_on_prompt_choice.bind(str(opt.get("id", ""))))
 		dialogue_choices.add_child(b)
 	dialogue_panel.show()
@@ -1829,12 +1856,12 @@ func rebuild_merchant_rows() -> void:
 		none.text = "(no stock)"
 		merchant_rows.add_child(none)
 		return
-	var stock: Array = parsed
-	for i in stock.size():
-		var item: Dictionary = stock[i]
+	var stock: Array = parsed as Array
+	for i: int in stock.size():
+		var item: Dictionary = stock[i] as Dictionary
 		var row := HBoxContainer.new()
 		var l := make_label()
-		l.text = "%s (%s) — %d g" % [str(item.get("name", "?")), str(item.get("rarity", "")), int(item.get("value", 0))]
+		l.text = "%s (%s) — %d g" % [str(item.get("name", "?")), str(item.get("rarity", "")), _as_int(item.get("value", 0))]
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(l)
 		var b := make_button("Buy")
@@ -1853,15 +1880,37 @@ func _on_buy_item(index: int) -> void:
 # Small helpers
 # ---------------------------------------------------------------------------
 
+static func _as_int(v: Variant, fallback: int = 0) -> int:
+	if v is int:
+		return v
+	if v is float:
+		var vf: float = v
+		return int(vf)
+	return fallback
+
+
+static func _as_float(v: Variant, fallback: float = 0.0) -> float:
+	if v is float:
+		return v
+	if v is int:
+		var vi: int = v
+		return float(vi)
+	return fallback
+
+
+static func _as_bool(v: Variant, fallback: bool = false) -> bool:
+	return v if v is bool else fallback
+
+
 func join_strs(arr: Array) -> String:
 	var parts: PackedStringArray = []
-	for v in arr:
+	for v: Variant in arr:
 		parts.append(str(v))
 	return ", ".join(parts)
 
 
 func clear_children(node: Node) -> void:
-	for child in node.get_children():
+	for child: Node in node.get_children():
 		node.remove_child(child)
 		child.free()
 
@@ -1870,10 +1919,10 @@ func _flicker_forge(delta: float) -> void:
 	if forge_lights.is_empty():
 		return
 	_flicker_t += delta
-	for i in forge_lights.size():
-		var l: OmniLight3D = forge_lights[i]
+	for i: int in forge_lights.size():
+		var l: OmniLight3D = forge_lights[i] as OmniLight3D
 		if is_instance_valid(l):
-			var base := float(l.get_meta("base_energy", 3.0))
+			var base := _as_float(l.get_meta("base_energy", 3.0), 3.0)
 			var n := sin(_flicker_t * 11.0 + float(i) * 1.7) * 0.6 + sin(_flicker_t * 23.7 + float(i) * 3.1) * 0.4
 			l.light_energy = base * (0.9 + 0.1 * n)
 
@@ -1892,8 +1941,8 @@ func play_fx() -> void:
 	# each enemy's reply) so a multi-action turn reads; a key press flushes
 	# the rest at once (flush_cues).
 	var t := 0.0
-	for c in parsed:
-		var cue: Dictionary = c
+	for c_var: Variant in (parsed as Array):
+		var cue: Dictionary = c_var as Dictionary
 		cue_queue.append({"t": t, "cue": cue})
 		if ATTACK_CUES.has(str(cue.get("kind", ""))):
 			t += CUE_STAGGER
@@ -1906,10 +1955,15 @@ const ATTACK_CUES := ["hit", "crit", "player_hit", "companion_hit", "kill"]
 func _drain_cues(delta: float) -> void:
 	if cue_queue.is_empty():
 		return
-	for q in cue_queue:
-		q["t"] = float(q["t"]) - delta
-	while not cue_queue.is_empty() and float(cue_queue[0]["t"]) <= 0.0:
-		_play_cue(cue_queue.pop_front()["cue"])
+	for q_var: Variant in cue_queue:
+		var q: Dictionary = q_var as Dictionary
+		q["t"] = _as_float(q["t"]) - delta
+	while not cue_queue.is_empty():
+		var head: Dictionary = cue_queue[0] as Dictionary
+		if _as_float(head["t"]) > 0.0:
+			break
+		var popped: Dictionary = cue_queue.pop_front() as Dictionary
+		_play_cue(popped["cue"] as Dictionary)
 	if cue_queue.is_empty():
 		_settle_leftovers()
 
@@ -1917,20 +1971,22 @@ func _drain_cues(delta: float) -> void:
 ## Play everything still queued right now (input buffering).
 func flush_cues() -> void:
 	while not cue_queue.is_empty():
-		_play_cue(cue_queue.pop_front()["cue"])
+		var popped: Dictionary = cue_queue.pop_front() as Dictionary
+		_play_cue(popped["cue"] as Dictionary)
 	_settle_leftovers()
 	juice.snap()
 
 
 ## Deaths and damage the cues didn't claim (DoT ticks, thorns...).
 func _settle_leftovers() -> void:
-	for tk in dying.keys():
-		juice.die(dying[tk])
+	for tk_var: Variant in dying.keys():
+		juice.die(dying[tk_var] as Node3D)
 	dying.clear()
-	for tk in pending_numbers.keys():
-		var parts: PackedStringArray = str(tk).split(",")
+	for tk_var: Variant in pending_numbers.keys():
+		var tk: String = str(tk_var)
+		var parts: PackedStringArray = tk.split(",")
 		var at := Vector3(float(parts[0]), 0.0, float(parts[1]))
-		juice.number(fx_root, at, str(pending_numbers[tk]), Color(0.85, 0.75, 1.0))
+		juice.number(fx_root, at, str(pending_numbers[tk_var]), Color(0.85, 0.75, 1.0))
 	pending_numbers.clear()
 
 
@@ -1957,13 +2013,13 @@ func _cue_juice(kind: String, x: int, y: int, dx: int, dy: int) -> void:
 				juice.flash(target)
 		"kill":
 			if dying.has(tk):
-				juice.die(dying[tk])
+				juice.die(dying[tk] as Node3D)
 				dying.erase(tk)
 		"deathless", "spore_burst":
 			if target != null:
 				juice.flash(target, Color(0.7, 1.0, 0.5))
 	if pending_numbers.has(tk) and kind != "windup":
-		var dmg := int(pending_numbers[tk])
+		var dmg := _as_int(pending_numbers[tk])
 		pending_numbers.erase(tk)
 		var col := Color(1.0, 0.36, 0.3) if kind == "player_hit" else (Color(1.0, 0.85, 0.25) if kind == "crit" else Color(1.0, 0.98, 0.92))
 		juice.number(fx_root, Vector3(float(x), 0.0, float(y)), str(dmg) + ("!" if kind == "crit" else ""), col, kind == "crit")
@@ -1985,9 +2041,13 @@ func _cue_juice(kind: String, x: int, y: int, dx: int, dy: int) -> void:
 
 func _play_cue(cue: Dictionary) -> void:
 	var kind := str(cue.get("kind", ""))
-	_cue_juice(kind, int(cue.get("x", 0)), int(cue.get("y", 0)), int(cue.get("dx", 0)), int(cue.get("dy", 0)))
-	var at := Vector3(float(cue.get("x", 0)), 0.6, float(cue.get("y", 0)))
-	var dir := Vector3(float(cue.get("dx", 0)), 0.0, float(cue.get("dy", 0)))
+	var cx := _as_int(cue.get("x", 0))
+	var cy := _as_int(cue.get("y", 0))
+	var cdx := _as_int(cue.get("dx", 0))
+	var cdy := _as_int(cue.get("dy", 0))
+	_cue_juice(kind, cx, cy, cdx, cdy)
+	var at := Vector3(float(cx), 0.6, float(cy))
+	var dir := Vector3(float(cdx), 0.0, float(cdy))
 	match kind:
 		"hit", "crit":
 			# The slash is authored at character scale, swinging along -Z
@@ -2051,7 +2111,7 @@ func spawn_vfx(scene: PackedScene, at: Vector3, scale: float) -> void:
 func spawn_sparkle(at: Vector3, scale: float) -> void:
 	var fx := VFXEffect.spawn(VFX_SPARKLE, fx_root, at)
 	fx.scale = Vector3.ONE * scale
-	get_tree().create_timer(SPARKLE_SECONDS).timeout.connect(func():
+	get_tree().create_timer(SPARKLE_SECONDS).timeout.connect(func() -> void:
 		if is_instance_valid(fx):
 			fx.stop())
 
@@ -2060,7 +2120,7 @@ func play_sfx(kind: String) -> void:
 	var stream := sfx_stream(kind)
 	if stream == null:
 		return
-	var ap: AudioStreamPlayer = sfx_players[sfx_next]
+	var ap: AudioStreamPlayer = sfx_players[sfx_next] as AudioStreamPlayer
 	sfx_next = (sfx_next + 1) % sfx_players.size()
 	ap.stream = stream
 	ap.volume_db = 0.0
@@ -2074,19 +2134,20 @@ func play_step() -> void:
 		sfx_cache[path] = load(path) if ResourceLoader.exists(path) else null
 	if sfx_cache[path] == null:
 		return
-	var ap: AudioStreamPlayer = sfx_players[sfx_next]
+	var ap: AudioStreamPlayer = sfx_players[sfx_next] as AudioStreamPlayer
 	sfx_next = (sfx_next + 1) % sfx_players.size()
-	ap.stream = sfx_cache[path]
+	ap.stream = sfx_cache[path] as AudioStream
 	ap.volume_db = -8.0
 	ap.play()
 
 
 func sfx_stream(kind: String) -> AudioStream:
-	for path in SFX.get(kind, []):
+	for path_var: Variant in (SFX.get(kind, []) as Array):
+		var path: String = str(path_var)
 		if not sfx_cache.has(path):
 			sfx_cache[path] = load(path) if ResourceLoader.exists(path) else null
 		if sfx_cache[path] != null:
-			return sfx_cache[path]
+			return sfx_cache[path] as AudioStream
 	return null
 
 
@@ -2100,17 +2161,17 @@ func is_aiming() -> bool:
 
 ## Forward one session call that returns a bridge event, then repaint.
 func do_session_action(call: Callable) -> void:
-	var ev: String = call.call()
+	var ev: String = str(call.call())
 	handle_event(ev)
 	refresh()
 
 
 func update_hotbar() -> void:
 	clear_children(hotbar_box)
-	var armed = state.get("armedSkill")
-	var slots: Array = state.get("hotbar", [])
-	for i in slots.size():
-		var slot = slots[i]
+	var armed: Variant = state.get("armedSkill")
+	var slots: Array = state.get("hotbar", []) as Array
+	for i: int in slots.size():
+		var slot: Variant = slots[i]
 		var b := make_button("")
 		b.custom_minimum_size = Vector2(102, 52)
 		b.add_theme_font_size_override("font_size", 12)
@@ -2118,14 +2179,14 @@ func update_hotbar() -> void:
 			b.text = "%d\n—" % (i + 1)
 			b.disabled = true
 		else:
-			var sk: Dictionary = slot
-			var cd := int(sk.get("cooldown", 0))
-			var tail := "%d MP" % int(sk.get("manaCost", 0))
+			var sk: Dictionary = slot as Dictionary
+			var cd := _as_int(sk.get("cooldown", 0))
+			var tail := "%d MP" % _as_int(sk.get("manaCost", 0))
 			if cd > 0:
 				tail = "cd %dt" % cd
 			b.text = "%d %s %s\n%s" % [i + 1, str(sk.get("glyph", "")), str(sk.get("name", "")), tail]
-			b.tooltip_text = "%s · rank %d · range %d" % [str(sk.get("name", "")), int(sk.get("rank", 0)), int(sk.get("range", 0))]
-			if not bool(sk.get("ready", false)):
+			b.tooltip_text = "%s · rank %d · range %d" % [str(sk.get("name", "")), _as_int(sk.get("rank", 0)), _as_int(sk.get("range", 0))]
+			if not _as_bool(sk.get("ready", false)):
 				b.modulate = Color(0.6, 0.6, 0.65)
 			if armed != null and str(armed) == str(sk.get("id", "")):
 				b.modulate = Color(1.0, 0.9, 0.4)
@@ -2137,19 +2198,23 @@ func update_hotbar() -> void:
 ## Aim cursor on the aimed tile; red tiles where telegraphed enemy attacks
 ## will land next turn.
 func update_combat_overlays() -> void:
-	var aim = state.get("aimedTarget")
-	aim_marker.visible = is_aiming() and aim != null
+	var aim_var: Variant = state.get("aimedTarget")
+	aim_marker.visible = is_aiming() and aim_var is Dictionary
 	if aim_marker.visible:
-		aim_marker.position = Vector3(float(aim["x"]), 0.04, float(aim["y"]))
+		var aim: Dictionary = aim_var as Dictionary
+		aim_marker.position = Vector3(_as_float(aim["x"]), 0.04, _as_float(aim["y"]))
 	clear_children(telegraph_root)
 	var zone: Dictionary = state["zone"]
-	for e in zone.get("enemies", []):
-		var intent = e.get("intent")
-		if intent == null:
+	for e_var: Variant in (zone.get("enemies", []) as Array):
+		var e: Dictionary = e_var as Dictionary
+		var intent_var: Variant = e.get("intent")
+		if not (intent_var is Dictionary):
 			continue
-		for t in intent.get("targetTiles", []):
+		var intent: Dictionary = intent_var as Dictionary
+		for t_var: Variant in (intent.get("targetTiles", []) as Array):
+			var t: Dictionary = t_var as Dictionary
 			var m := make_tile_marker(Color(0.95, 0.15, 0.1, 0.45), 0.03)
-			m.position = Vector3(float(t["x"]), 0.02, float(t["y"]))
+			m.position = Vector3(_as_float(t["x"]), 0.02, _as_float(t["y"]))
 			telegraph_root.add_child(m)
 
 
@@ -2179,14 +2244,14 @@ func rebuild_skills_panel() -> void:
 	var parsed: Variant = JSON.parse_string(session.skills_json())
 	if not (parsed is Dictionary):
 		return
-	var data: Dictionary = parsed
+	var data: Dictionary = parsed as Dictionary
 	var head := make_label()
 	head.add_theme_font_size_override("font_size", 17)
-	head.text = "Skills — %d point(s) to spend   (K / Esc to close)" % int(data.get("skillPoints", 0))
+	head.text = "Skills — %d point(s) to spend   (K / Esc to close)" % _as_int(data.get("skillPoints", 0))
 	skills_box.add_child(head)
 	var branch := ""
-	for sk_v in data.get("skills", []):
-		var sk: Dictionary = sk_v
+	for sk_v: Variant in (data.get("skills", []) as Array):
+		var sk: Dictionary = sk_v as Dictionary
 		if str(sk["branch"]) != branch:
 			branch = str(sk["branch"])
 			var bl := make_label()
@@ -2199,14 +2264,14 @@ func rebuild_skills_panel() -> void:
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		l.custom_minimum_size = Vector2(500, 0)
-		var kind := "passive" if str(sk["kind"]) == "passive" else "%d MP · cd %d" % [int(sk["manaCost"]), int(sk["cooldown"])]
+		var kind := "passive" if str(sk["kind"]) == "passive" else "%d MP · cd %d" % [_as_int(sk["manaCost"]), _as_int(sk["cooldown"])]
 		var desc := str(sk["summary"])
 		if sk.get("next") != null:
 			desc += "\nNext: " + str(sk["next"])
-		l.text = "%s %s  (tier %d, rank %d/3, %s)\n%s" % [str(sk["glyph"]), str(sk["name"]), int(sk["tier"]), int(sk["rank"]), kind, desc]
+		l.text = "%s %s  (tier %d, rank %d/3, %s)\n%s" % [str(sk["glyph"]), str(sk["name"]), _as_int(sk["tier"]), _as_int(sk["rank"]), kind, desc]
 		row.add_child(l)
 		var b := make_button("Learn")
-		b.disabled = not bool(sk.get("canLearn", false))
+		b.disabled = not _as_bool(sk.get("canLearn", false))
 		if sk.get("reason") != null:
 			b.tooltip_text = str(sk["reason"])
 		var sid := str(sk["id"])
@@ -2244,7 +2309,7 @@ func _notification(what: int) -> void:
 ## On launch: the full-screen title (title_screen.gd) over the idle town.
 ## Picking New Adventure or Continue hands the game over and closes it.
 func show_title() -> void:
-	title_screen = TitleScreen.new()
+	title_screen = TitleScreen.new() as TitleScreen
 	title_screen.setup(session, save_dir())
 	title_screen.start_new.connect(_on_title_start_new)
 	title_screen.continue_slot.connect(_on_title_continue)

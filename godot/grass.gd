@@ -71,7 +71,8 @@ static func build(tiles: Array, skip: Dictionary) -> Node3D:
 				if h01(x, y, i * 4 + 900) < FLOWER_CHANCE:
 					var s := 0.8 + r * 0.5
 					flower_xf.append(Transform3D(basis.scaled(Vector3(s, s, s)), Vector3(px, 0.0, pz)))
-					flower_col.append(FLOWER_COLORS[int(r * 997.0) % FLOWER_COLORS.size()])
+					var fc: Color = FLOWER_COLORS[int(r * 997.0) % FLOWER_COLORS.size()]
+					flower_col.append(fc)
 
 	if tuft_xf.is_empty():
 		return null
@@ -120,10 +121,15 @@ static func tuft_mesh() -> ArrayMesh:
 		var side := Vector3(-out.z, 0.0, out.x).rotated(Vector3.UP, rng.randf_range(-0.6, 0.6)) * half_w
 		var mid := root + Vector3(0.0, h * 0.55, 0.0) + lean * 0.35
 		var tip := root + Vector3(0.0, h, 0.0) + lean
-		var v := [root - side, root + side, mid - side * 0.65, mid + side * 0.65, tip]
-		var uvy := [0.0, 0.0, 0.55, 0.55, 1.0]
-		for tri in [[0, 1, 2], [2, 1, 3], [2, 3, 4]]:
-			for k in tri:
+		var v: Array[Vector3] = [root - side, root + side, mid - side * 0.65, mid + side * 0.65, tip]
+		var uvy: Array[float] = [0.0, 0.0, 0.55, 0.55, 1.0]
+		var tris: Array[PackedInt32Array] = [
+			PackedInt32Array([0, 1, 2]),
+			PackedInt32Array([2, 1, 3]),
+			PackedInt32Array([2, 3, 4]),
+		]
+		for tri: PackedInt32Array in tris:
+			for k: int in tri:
 				st.set_uv(Vector2(0.5, uvy[k]))
 				st.set_normal(Vector3.UP)
 				st.add_vertex(v[k])
@@ -142,7 +148,8 @@ static func flower_mesh() -> ArrayMesh:
 		var tip := c + Vector3(cos(a0), 0.15, sin(a0)) * 0.08
 		var l := c + Vector3(cos(a0 - 0.45), 0.05, sin(a0 - 0.45)) * 0.045
 		var r := c + Vector3(cos(a0 + 0.45), 0.05, sin(a0 + 0.45)) * 0.045
-		for vtx in [c, l, tip, c, tip, r]:
+		var verts: Array[Vector3] = [c, l, tip, c, tip, r]
+		for vtx: Vector3 in verts:
 			st.set_uv(Vector2(0.5, 1.0))
 			st.set_normal(Vector3.UP)
 			st.add_vertex(vtx)
