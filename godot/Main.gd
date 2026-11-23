@@ -1003,9 +1003,9 @@ func _set_layer(n: Node, layer: int) -> void:
 const FIGURE_DIR := "res://assets/models/figures/"
 const PLAYER_FIGURES := {"Vanguard": "fig_vanguard"}
 const COMPANION_FIGURES := {"silverwind_lynx": "fig_lynx", "SilverwindLynx": "fig_lynx"}
-const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver"}
+const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver", "dread_wraith": "fig_dread_wraith"}
 ## Figure height in tiles (before the actor's scale factor).
-const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38}
+const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35}
 const PLINTH_H := 0.09
 const RIM_PLAYER := Color(0.30, 0.55, 1.00)
 const RIM_COMPANION := Color(0.22, 0.86, 0.78)
