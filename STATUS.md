@@ -345,3 +345,7 @@ and glTF inspection rather than assumed:
 
 ## Goblin Skirmisher SHIPPED (Nov 22, 2026, follow-up)
 - On the clean post-dither-fix captures, Garth reversed the hold: fig_goblin.glb (1.8 MB, 28,000 tris, lifted albedo) is wired for goblin_skirmisher in Main.gd at FIGURE_HEIGHT 0.95 and committed. Figure coverage is now 6 of 17 archetypes (Vanguard, Lynx, Blight Rat, Crypt Sentinel, Goblin, Bone Acolyte). Playtest still PLAYTEST_OK.
+
+## Miniature figures batch 3 — Ash Cultist SHIPPED, Grave Husk HELD (Nov 22, 2026)
+- **Ash Cultist SHIPPED** (Garth ship-with-exceptions call): `fig_ash_cultist.glb` (1.7 MB, 20,000 tris, burnt-orange robe + magma orb) wired for `ash_cultist` in `Main.gd` at `FIGURE_HEIGHT` 1.35. Gate pack: `docs/asset-gate/figures-batch3-2026-11-22/` — independent review verdict `SHIP-WITH-EXCEPTION` (watertight `12046/86/0`, 1.7 MB, toes sliced at `z=-0.4006` masked by robe hem in-game). Figure coverage is now 7 of 17 archetypes.
+- **Grave Husk HELD** after independent review `REJECT` (muddy shield-staff rebake, dark skull cavity, spiky shin-greave decimation, blunted toes at `z=-0.4230`, low in-game contrast, 2 degenerate tris); re-bake fix pass in progress.
