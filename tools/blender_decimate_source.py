@@ -210,7 +210,7 @@ def rebake(low, high, tex_size):
     low.data.uv_layers.new(name="UVMap")
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(angle_limit=math.radians(66.0), island_margin=0.01,
+    bpy.ops.uv.smart_project(angle_limit=math.radians(66.0), island_margin=0.0015,
                              correct_aspect=True, scale_to_bounds=False)
     bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -242,7 +242,7 @@ def rebake(low, high, tex_size):
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "GPU"
-    scene.cycles.samples = 16
+    scene.cycles.samples = 32
     scene.render.bake.margin = 8
     bpy.ops.object.select_all(action="DESELECT")
     high.select_set(True)
