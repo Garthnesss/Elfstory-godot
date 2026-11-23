@@ -342,3 +342,6 @@ and glTF inspection rather than assumed:
 - **Goblin Skirmisher HELD by Garth** after a review REJECT + fix pass (Mira albedo lift via new tools/glb_albedo_lift.py, re-bake cut-z 0.085, tex 1024, 1.8 MB). The presented captures were corrupted by the cutaway bug below, so the goblin was re-shot clean post-fix and awaits a fresh call; its GLB + wiring remain uncommitted.
 - **Cutaway dither fix (godot/tile.gdshader):** the player cutaway capped fragment discard at 88%, leaving a dotted ghost of wall printed over figures near the player. Core of the cutaway now discards fully (inside > bayer), feathered rim unchanged; verified by before/after captures — figures render clean, walls still dissolve.
 - Playtest harness still PLAYTEST_OK after the wiring + shader changes.
+
+## Goblin Skirmisher SHIPPED (Nov 22, 2026, follow-up)
+- On the clean post-dither-fix captures, Garth reversed the hold: fig_goblin.glb (1.8 MB, 28,000 tris, lifted albedo) is wired for goblin_skirmisher in Main.gd at FIGURE_HEIGHT 0.95 and committed. Figure coverage is now 6 of 17 archetypes (Vanguard, Lynx, Blight Rat, Crypt Sentinel, Goblin, Bone Acolyte). Playtest still PLAYTEST_OK.

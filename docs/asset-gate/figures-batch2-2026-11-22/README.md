@@ -87,6 +87,6 @@ roughness) with the sculpted base cut → game plinth in godot/Main.gd.
   that speckle. The shader is fixed in this commit (core of the
   cutaway now discards fully; feather stays on walls only), and the
   goblin was re-shot clean
-  (fig_goblin_ingame_ditherfix_full/close.png). The goblin GLB and
-  its Main.gd wiring stay OUT of this commit, uncommitted in the
-  working tree, pending a fresh call from Garth on the clean captures.
+  (fig_goblin_ingame_ditherfix_full/close.png). **On the clean
+  captures Garth reversed the hold — Goblin: SHIP with exceptions**
+  (follow-up commit after 17df0df). Batch 2 is fully shipped.
