@@ -336,3 +336,9 @@ and glTF inspection rather than assumed:
   2. *Figure coverage:* only 4 archetypes have figures (vanguard, lynx, blight rat, crypt sentinel). Goblins, the other 13 enemy archetypes and all NPCs still render as capsules on plinths. A second figure batch is the obvious next asset run.
   3. *Occlusion:* enemies standing behind tall wall tiles are partly hidden by the wall (the cutaway dither is centred on the player only) — readable in play, noted for the presentation pass.
 - **Verified at merge:** `cargo test` 107/107, `RUN1_CHECK_OK`, `PLAYTEST_OK`, 30-frame headless Main clean.
+
+## Miniature figures batch 2 + cutaway dither fix (Nov 22, 2026)
+- **Bone Acolyte figure SHIPPED** (Garth ship-with-exceptions call): fig_bone_acolyte.glb (1.9 MB, 20,000 tris, violet skeletal cultist) wired for bone_acolyte in Main.gd at FIGURE_HEIGHT 1.35. Gate pack: docs/asset-gate/figures-batch2-2026-11-22/ — independent review verdict SHIP-WITH-EXCEPTION ("strongest conversion in either batch"); caveat: reads as a hooded caster, not visibly skeletal (hood interior is a black void).
+- **Goblin Skirmisher HELD by Garth** after a review REJECT + fix pass (Mira albedo lift via new tools/glb_albedo_lift.py, re-bake cut-z 0.085, tex 1024, 1.8 MB). The presented captures were corrupted by the cutaway bug below, so the goblin was re-shot clean post-fix and awaits a fresh call; its GLB + wiring remain uncommitted.
+- **Cutaway dither fix (godot/tile.gdshader):** the player cutaway capped fragment discard at 88%, leaving a dotted ghost of wall printed over figures near the player. Core of the cutaway now discards fully (inside > bayer), feathered rim unchanged; verified by before/after captures — figures render clean, walls still dissolve.
+- Playtest harness still PLAYTEST_OK after the wiring + shader changes.

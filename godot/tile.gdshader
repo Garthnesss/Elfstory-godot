@@ -111,7 +111,7 @@ void fragment() {
 		// Only geometry between the player and the camera, above their feet.
 		float inside = (1.0 - smoothstep(cut_radius * 0.55, cut_radius, dist)) * step(0.04, t)
 			* step(0.15, world_pos.y);
-		if (inside * 0.88 > bayer4(FRAGCOORD.xy)) {
+		if (inside > bayer4(FRAGCOORD.xy)) {
 			discard;
 		}
 	}
