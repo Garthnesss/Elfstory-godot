@@ -931,7 +931,7 @@ func refresh_entities() -> void:
 		var arch := str(e.get("archetype", ""))
 		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(_as_float(e["x"]), 0.0, _as_float(e["y"])), _as_int(e.get("hp", -1), -1),
 			func() -> Node3D: return make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
-				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20)))
+				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20), boss))
 
 	for npc_var: Variant in (zone.get("npcs", []) as Array):
 		var npc: Dictionary = npc_var as Dictionary
@@ -1022,9 +1022,9 @@ func _set_layer(n: Node, layer: int) -> void:
 const FIGURE_DIR := "res://assets/models/figures/"
 const PLAYER_FIGURES := {"Vanguard": "fig_vanguard"}
 const COMPANION_FIGURES := {"silverwind_lynx": "fig_lynx", "SilverwindLynx": "fig_lynx"}
-const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver", "dread_wraith": "fig_dread_wraith", "rime_revenant": "fig_rime_revenant", "iron_golem": "fig_iron_golem", "cinder_wisp": "fig_cinder_wisp", "obsidian_warden": "fig_obsidian_warden", "spore_hulk": "fig_spore_hulk"}
+const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver", "dread_wraith": "fig_dread_wraith", "rime_revenant": "fig_rime_revenant", "iron_golem": "fig_iron_golem", "cinder_wisp": "fig_cinder_wisp", "obsidian_warden": "fig_obsidian_warden", "spore_hulk": "fig_spore_hulk", "boss_bone_cantor": "fig_boss_bone_cantor", "boss_ashen_inquisitor": "fig_boss_ashen_inquisitor", "boss_malakor": "fig_boss_malakor"}
 ## Figure height in tiles (before the actor's scale factor).
-const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54}
+const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54, "fig_boss_bone_cantor": 1.38, "fig_boss_ashen_inquisitor": 1.42, "fig_boss_malakor": 1.48}
 const PLINTH_H := 0.09
 const RIM_PLAYER := Color(0.30, 0.55, 1.00)
 const RIM_COMPANION := Color(0.22, 0.86, 0.78)
@@ -1045,44 +1045,60 @@ func figure_scene(stem: String) -> PackedScene:
 
 ## Root (lerped to the tile) -> "Body" pivot (juice transforms) ->
 ## plinth + "Model" pivot (facing yaw) -> figure or capsule.
-func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Color.WHITE) -> Node3D:
+func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Color.WHITE, is_boss := false) -> Node3D:
 	var root := Node3D.new()
 	var body := Node3D.new()
 	body.name = "Body"
 	root.add_child(body)
 
+	var plinth_h := PLINTH_H * 1.25 if is_boss else PLINTH_H
 	var plinth := MeshInstance3D.new()
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.34
-	cyl.bottom_radius = 0.38
-	cyl.height = PLINTH_H
-	cyl.radial_segments = 24
+	cyl.top_radius = 0.40 if is_boss else 0.34
+	cyl.bottom_radius = 0.45 if is_boss else 0.38
+	cyl.height = plinth_h
+	cyl.radial_segments = 28 if is_boss else 24
 	plinth.mesh = cyl
-	plinth.position.y = PLINTH_H * 0.5
+	plinth.position.y = plinth_h * 0.5
 	var pm := StandardMaterial3D.new()
-	pm.albedo_color = Color(0.20, 0.13, 0.08)
-	pm.roughness = 0.55
+	pm.albedo_color = Color(0.14, 0.10, 0.08) if is_boss else Color(0.20, 0.13, 0.08)
+	pm.roughness = 0.45 if is_boss else 0.55
 	plinth.material_override = pm
 	body.add_child(plinth)
+
 	var ring := MeshInstance3D.new()
 	var rc := CylinderMesh.new()
-	rc.top_radius = 0.395
-	rc.bottom_radius = 0.40
-	rc.height = 0.035
-	rc.radial_segments = 24
+	rc.top_radius = 0.465 if is_boss else 0.395
+	rc.bottom_radius = 0.475 if is_boss else 0.40
+	rc.height = 0.045 if is_boss else 0.035
+	rc.radial_segments = 28 if is_boss else 24
 	ring.mesh = rc
-	ring.position.y = 0.0175
+	ring.position.y = rc.height * 0.5
 	var rm := StandardMaterial3D.new()
-	rm.albedo_color = rim
+	rm.albedo_color = Color(0.95, 0.74, 0.22) if is_boss else rim
+	rm.metallic = 0.85 if is_boss else 0.0
+	rm.roughness = 0.25 if is_boss else 0.5
 	rm.emission_enabled = true
 	rm.emission = rim
-	rm.emission_energy_multiplier = 0.5
+	rm.emission_energy_multiplier = 0.65 if is_boss else 0.5
 	ring.material_override = rm
 	body.add_child(ring)
 
+	if is_boss:
+		var top_ring := MeshInstance3D.new()
+		var trc := CylinderMesh.new()
+		trc.top_radius = 0.415
+		trc.bottom_radius = 0.422
+		trc.height = 0.018
+		trc.radial_segments = 28
+		top_ring.mesh = trc
+		top_ring.position.y = plinth_h - 0.013
+		top_ring.material_override = rm
+		body.add_child(top_ring)
+
 	var model := Node3D.new()
 	model.name = "Model"
-	model.position.y = PLINTH_H
+	model.position.y = plinth_h
 	body.add_child(model)
 	var packed := figure_scene(stem)
 	if packed != null:
