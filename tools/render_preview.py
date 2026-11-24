@@ -26,9 +26,9 @@ size = (mx - mn).length
 cam_data = bpy.data.cameras.new("cam")
 cam = bpy.data.objects.new("cam", cam_data)
 bpy.context.scene.collection.objects.link(cam)
-dist = size * 1.15
-cam.location = center + Vector((dist * 0.75, -dist * 0.75, dist * 0.55))
-cam.rotation_euler = (math.radians(62), 0, math.radians(45))
+dist = size * 1.38
+cam.location = center + Vector((dist * 0.72, -dist * 0.72, dist * 0.42))
+cam.rotation_euler = (center - cam.location).to_track_quat("-Z", "Y").to_euler()
 bpy.context.scene.camera = cam
 
 sun_data = bpy.data.lights.new("sun", "SUN")

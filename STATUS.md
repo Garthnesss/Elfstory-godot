@@ -389,3 +389,10 @@ and glTF inspection rather than assumed:
 - **Vex the Quiet (`vex`, Oakhaven `(6, 13)`) SHIPPED:** `fig_npc_vex_v2_ds_s33.png` → `fig_npc_vex.glb` (2.0 MB, 41,999 tris, UV-preserving `--cut-z 0.036` + WebP albedo lift `0.80/1.35`, `FIGURE_HEIGHT` 1.28). Cleared Round-2 Cycles rebake blotch & shadow crush (watertight `10021/507/0`).
 - **Warden Vance (`vance`) HELD by Garth:** v1 had close-zoom beard seam speckling and a blunted outstretched sword blade; unwired and uncommitted — queued for sheathed-sword v2 re-sculpt alongside Pell & Sister Wren.
 - **Gate pack:** `docs/asset-gate/npcs-oakhaven-batch1-2026-11-23/README.md`. Verified: `cargo test` 107/107, `godot_verify.sh godot` (`ALL GREEN`).
+
+## Town NPCs batch 2 — Oakhaven Complete (6/6, Zero Capsules Left, Nov 24, 2026)
+- **Warden Vance v3 (`vance`, Oakhaven `(14, 8)`) SHIPPED:** blade-free `fig_npc_vance_v3_ds_s33.png` → `fig_npc_vance.glb` (3.0 MB, 39,999 tris, `--rebake --tex-size 2048 --cut-z 0.040` + albedo lift `0.85/1.25`, `FIGURE_HEIGHT` 1.32). Fixed shadow crushing from Round 1; minor close-zoom beard/tasset grain waived.
+- **Pell the Carter (`pell`, Oakhaven `(10, 5)`) SHIPPED:** `fig_npc_pell_ds_s22.png` → `fig_npc_pell.glb` (2.3 MB, 38,000 tris, `--rebake --tex-size 2048`, `FIGURE_HEIGHT` 1.26).
+- **Sister Wren (`wren`, Oakhaven `(19, 8)`) SHIPPED:** `fig_npc_wren_ds_s22.png` → `fig_npc_wren.glb` (2.8 MB, 40,000 tris, `--rebake --tex-size 2048 --cut-z 0.060`, `FIGURE_HEIGHT` 1.26). Round-2 `--rebake` + `--cut-z 0.060` restored intact right boot & cleared cream-robe streaks.
+- Fixed `tools/render_preview.py` camera framing (`dist = size * 1.38` + `to_track_quat`) so tall humanoid heads are no longer cropped in gate previews.
+- **Gate pack:** `docs/asset-gate/npcs-oakhaven-batch2-2026-11-24/README.md`. **Oakhaven NPC coverage is now 6/6.** Verified: `cargo test` 107/107, `godot_verify.sh godot` (`ALL GREEN`).
