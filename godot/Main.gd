@@ -13,6 +13,11 @@ extends Node3D
 const WATER_SHADER: Shader = preload("res://water.gdshader")
 const TILE_SHADER: Shader = preload("res://tile.gdshader")
 const Grass := preload("res://grass.gd")
+const OakhavenDiorama := preload("res://oakhaven_diorama.gd")
+## Pitch C Oakhaven redesign (Nov 24, 2026): hide/retire the town-rebuild UI,
+## lot stakes, and cold forge ruin in Oakhaven while preserving the Rust core
+## (`rust/elfstory-core/src/town.rs` & `town_layout.rs`) for restore or deletion.
+const ENABLE_TOWN_REBUILD_UI := false
 ## Zones whose "floor" tiles grow meadow grass + wildflowers (grass.gd).
 const GRASS_ZONES := ["oakhaven", "overworld"]
 const MOVE_REPEAT := 0.16 # held-key step interval, seconds
@@ -121,6 +126,8 @@ var hud_body: Label
 var log_label: RichTextLabel
 var town_panel: PanelContainer
 var town_box: VBoxContainer
+var quest_panel: PanelContainer
+var quest_box: VBoxContainer
 var dialogue_panel: PanelContainer
 var dialogue_label: Label
 var dialogue_choices: VBoxContainer
@@ -216,6 +223,8 @@ func _maybe_smoke_capture() -> void:
 					var lot := parts[1] if parts.size() > 1 else ""
 					session.debug_set_town(pop, lot)
 					refresh()
+				elif a == "--elfstory-unlit":
+					_apply_unlit_capture_mode()
 			await get_tree().create_timer(2.0).timeout
 			await RenderingServer.frame_post_draw
 			var err := get_viewport().get_texture().get_image().save_png(path)
@@ -241,6 +250,7 @@ func refresh() -> void:
 	update_hud()
 	update_log()
 	rebuild_town_panel()
+	rebuild_quest_tracker()
 
 	var zone: Dictionary = state["zone"]
 	var zid := str(zone["id"])
@@ -381,7 +391,9 @@ func rebuild_world() -> void:
 		var u: Array = u_var as Array
 		used["%d,%d" % [_as_int(u[0]), _as_int(u[1])]] = true
 
-	grass_zone = GRASS_ZONES.has(str(zone["id"]))
+	var zid := str(zone["id"])
+	var is_oakhaven := zid == "oakhaven"
+	grass_zone = GRASS_ZONES.has(zid)
 	var flat_items: Array = []
 	var tall_items: Array = []
 	for y: int in tiles.size():
@@ -391,20 +403,30 @@ func rebuild_world() -> void:
 				continue
 			var kind := str(row[x])
 			var item := {"x": x, "y": y, "kind": kind, "used": used.has("%d,%d" % [x, y])}
-			if TALL_HEIGHTS.has(kind):
+			# Pitch C Oakhaven replaces tall box-soup props with handcrafted diorama geometry.
+			if is_oakhaven and kind in ["tree", "market_stall", "torch", "pillar", "gate_city"]:
+				var base_kind := "road" if kind == "gate_city" else "floor"
+				flat_items.append({"x": x, "y": y, "kind": base_kind, "used": false})
+			elif TALL_HEIGHTS.has(kind):
 				tall_items.append(item)
 			else:
 				flat_items.append(item)
 
-	var flat_mm := make_multimesh(flat_items, false, is_town)
+	var flat_mm := make_multimesh(flat_items, false, is_town, zid)
 	if flat_mm != null:
 		terrain_root.add_child(flat_mm)
-	var tall_mm := make_multimesh(tall_items, true, is_town)
+	var tall_mm := make_multimesh(tall_items, true, is_town, zid)
 	if tall_mm != null:
 		terrain_root.add_child(tall_mm)
 
 	var grass_skip := covered.duplicate()
-	if str(zone["id"]) == "oakhaven":
+	if is_oakhaven:
+		for y: int in tiles.size():
+			var row: Array = tiles[y]
+			for x: int in row.size():
+				var k := str(row[x])
+				if OakhavenDiorama.is_in_sinkhole(x, y) or k in ["tree", "shrine", "herb_node", "market_stall", "torch", "pillar", "chasm"]:
+					grass_skip["%d,%d" % [x, y]] = true
 		for p_var: Variant in placements:
 			var p: Dictionary = p_var as Dictionary
 			if str(p.get("url", "")).begins_with("procedural://"):
@@ -423,8 +445,11 @@ func rebuild_world() -> void:
 			terrain_root.add_child(grass)
 	# Placements are the Oakhaven town-lot models; anywhere else they'd
 	# draw the town's buildings at their Oakhaven tile coordinates.
-	if str(zone["id"]) == "oakhaven":
+	if is_oakhaven:
 		build_landmarks(placements)
+		var oak_scene := ResourceLoader.load("res://assets/models/oakhaven_oak.glb") as PackedScene
+		var plat_scene := ResourceLoader.load("res://assets/models/oakhaven_platypus.glb") as PackedScene
+		OakhavenDiorama.build(landmarks_root, tiles, oak_scene, plat_scene, forge_lights)
 
 
 func fetch_placements() -> Array:
@@ -436,7 +461,7 @@ func fetch_placements() -> Array:
 
 ## One MultiMesh of unit boxes. Flat tiles top out at y = 0 (water sits
 ## lower, chests/fountains sit on top); tall kinds rise from y = -1.
-func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstance3D:
+func make_multimesh(items: Array, tall: bool, is_town: bool, zone_id: String = "") -> MultiMeshInstance3D:
 	if items.is_empty():
 		return null
 	var mm := MultiMesh.new()
@@ -475,11 +500,12 @@ func make_multimesh(items: Array, tall: bool, is_town: bool) -> MultiMeshInstanc
 				for ox: int in range(-1, 2):
 					if not wall_set.has("%d,%d" % [ix + ox, iy + oy]):
 						enclosed = 0.0
+		var elev := OakhavenDiorama.tile_elevation(zone_id, ix, iy)
 		var gap := 1.0 if ((grass_zone and kind == "floor") or enclosed > 0.0) else 0.97
 		var basis := Basis.from_scale(Vector3(gap, h, gap))
-		var origin := Vector3(float(ix), bottom + h * 0.5, float(iy))
+		var origin := Vector3(float(ix), elev + bottom + h * 0.5, float(iy))
 		mm.set_instance_transform(i, Transform3D(basis, origin))
-		var c := tile_color(kind, is_town)
+		var c := tile_color(kind, is_town, zone_id, ix, iy)
 		if _as_bool(it.get("used", false)):
 			c = c.darkened(0.45) # looted chest / spent brazier / attuned waystone
 		mm.set_instance_color(i, c)
@@ -509,11 +535,26 @@ func flat_box(kind: String) -> Vector2:
 			return Vector2(1.0, -1.0) # top at 0
 
 
-func tile_color(kind: String, is_town: bool) -> Color:
+func tile_color(kind: String, is_town: bool, zone_id: String = "", tx: int = 0, ty: int = 0) -> Color:
 	if kind == "floor" and mood_floor is Color:
 		return mood_floor as Color
 	if kind == "wall" and mood_wall is Color:
 		return mood_wall as Color
+	if zone_id == "oakhaven":
+		if kind == "chasm":
+			return Color(0.08, 0.10, 0.16)
+		if kind == "stairs_down":
+			return Color(0.24, 0.42, 0.62)
+		if kind == "road":
+			if OakhavenDiorama.is_in_sinkhole(tx, ty):
+				return Color(0.32, 0.36, 0.46)
+			if ty == 6 and tx >= 9 and tx <= 17:
+				return Color(0.40, 0.27, 0.16) # north trestle bridge planks
+			return Color(0.64, 0.51, 0.34)
+		if kind == "herb_node":
+			return Color(0.24, 0.34, 0.18)
+		if kind == "shrine":
+			return Color(0.56, 0.53, 0.48)
 	match kind:
 		"floor":
 			if grass_zone:
@@ -593,7 +634,17 @@ func build_landmarks(placements: Array) -> void:
 	forge_lights.clear()
 	for p_var: Variant in placements:
 		var p: Dictionary = p_var as Dictionary
+		var pid := str(p.get("id", ""))
 		var url := str(p.get("url", ""))
+		var light_data: Variant = p.get("light")
+		if not ENABLE_TOWN_REBUILD_UI:
+			# Pitch C Oakhaven: woodland oaks & platypus are mounted by OakhavenDiorama;
+			# Torin's forge ships lit and operational from turn 1.
+			if pid.begins_with("prop:oak_") or pid == "landmark:old_outpost_oak":
+				continue
+			if pid == "landmark:torin_forge":
+				url = "/models/blacksmith.glb"
+				light_data = {"color": 0xff8c2b, "intensity": 3.6, "distance": 8.0, "offset": [0.0, 1.0, 0.9]}
 		var fname := url.get_file()
 		var target := _as_float(p.get("targetWidthTiles", 3.0), 3.0)
 		var y_off := _as_float(p.get("yOffset", 0.0))
@@ -626,8 +677,8 @@ func build_landmarks(placements: Array) -> void:
 		landmarks_root.add_child(node)
 		if url != "procedural://village_field":
 			add_ground_skirt(Vector3(px, 0.0, pz), target, node.rotation.y)
-		if p.get("light") != null:
-			var ld: Dictionary = p["light"] as Dictionary
+		if light_data is Dictionary:
+			var ld: Dictionary = light_data as Dictionary
 			var omni := OmniLight3D.new()
 			var col := _as_int(ld.get("color", 0xffffff), 0xffffff)
 			omni.light_color = Color(
@@ -646,9 +697,10 @@ func build_landmarks(placements: Array) -> void:
 			if col == 0xff8c2b:
 				forge_lights.append(omni)
 
-	var town_dict: Dictionary = state.get("town", {}) as Dictionary
-	if not _as_bool(town_dict.get("blacksmithComplete", false)):
-		build_lot_markers()
+	if ENABLE_TOWN_REBUILD_UI:
+		var town_dict: Dictionary = state.get("town", {}) as Dictionary
+		if not _as_bool(town_dict.get("blacksmithComplete", false)):
+			build_lot_markers()
 
 
 ## Trodden-dirt Decal under a building so it sits *in* the ground instead
@@ -907,7 +959,9 @@ func refresh_entities() -> void:
 	pending_numbers.clear()
 	var seen := {}
 
-	player_node = _sync_actor(seen, "player", Vector3(_as_float(pl["x"]), 0.0, _as_float(pl["y"])), _as_int(pl.get("hp", -1), -1),
+	var p_x := _as_int(pl["x"])
+	var p_y := _as_int(pl["y"])
+	player_node = _sync_actor(seen, "player", Vector3(float(p_x), OakhavenDiorama.tile_elevation(zid, p_x, p_y), float(p_y)), _as_int(pl.get("hp", -1), -1),
 		func() -> Node3D: return make_actor(RIM_PLAYER, 1.0, str(PLAYER_FIGURES.get(str(pl.get("starterClass", "")), "")), Color(0.30, 0.55, 1.00)))
 
 	var comp_var: Variant = pl.get("companion")
@@ -917,7 +971,9 @@ func refresh_entities() -> void:
 			var ckind := str(comp.get("kind", ""))
 			var ccol := Color(0.45, 0.72, 1.00) if ckind in ["starlight_owl", "StarlightOwl"] else Color(0.22, 0.86, 0.78)
 			var cname := str(comp.get("name", "Companion"))
-			_sync_actor(seen, "companion", Vector3(_as_float(comp["x"]), 0.0, _as_float(comp["y"])), _as_int(comp.get("hp", -1), -1),
+			var cx := _as_int(comp["x"])
+			var cy := _as_int(comp["y"])
+			_sync_actor(seen, "companion", Vector3(float(cx), OakhavenDiorama.tile_elevation(zid, cx, cy), float(cy)), _as_int(comp.get("hp", -1), -1),
 				func() -> Node3D:
 					var cstem := str(COMPANION_FIGURES.get(ckind, ""))
 					var cn := make_actor(RIM_COMPANION, 1.0, cstem, ccol)
@@ -933,15 +989,35 @@ func refresh_entities() -> void:
 			func() -> Node3D: return make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
 				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20), boss))
 
+	var npc_markers: Dictionary = state.get("npcMarkers", {}) as Dictionary
 	for npc_var: Variant in (zone.get("npcs", []) as Array):
 		var npc: Dictionary = npc_var as Dictionary
 		var nid := str(npc["id"])
 		var nname := str(npc["name"])
-		_sync_actor(seen, "npc:" + nid, Vector3(_as_float(npc["x"]), 0.0, _as_float(npc["y"])), -1,
+		var nx := _as_int(npc["x"])
+		var ny := _as_int(npc["y"])
+		var marker := str(npc_markers.get(nid, ""))
+		var pstyle := _npc_plinth_style(nid, marker)
+		var n_node := _sync_actor(seen, "npc:" + nid, Vector3(float(nx), OakhavenDiorama.tile_elevation(zid, nx, ny), float(ny)), -1,
 			func() -> Node3D:
-				var n := make_actor(RIM_NPC, 1.0, str(NPC_FIGURES.get(nid, "")), Color(0.30, 0.85, 0.40))
-				add_label(n, nname)
+				var n := make_actor(RIM_NPC, 1.0, str(NPC_FIGURES.get(nid, "")), Color(0.30, 0.85, 0.40), false, pstyle)
+				n.set_meta("npc_id", nid)
+				n.set_meta("rest_yaw", _npc_rest_yaw(nid))
+				n.set_meta("idle_phase", float(nid.hash() % 100) * 0.0628)
+				var model_p := n.get_node_or_null("Body/Model") as Node3D
+				if model_p != null:
+					model_p.rotation.y = _npc_rest_yaw(nid)
+				add_npc_labels(n, nid, nname)
 				return n)
+		_update_npc_badge_and_plinth(n_node, nid, nname, marker)
+
+	for cr_var: Variant in (zone.get("critters", []) as Array):
+		var cr: Dictionary = cr_var as Dictionary
+		var crid := str(cr.get("id", "crit"))
+		var crx := _as_int(cr.get("x", 0))
+		var cry := _as_int(cr.get("y", 0))
+		_sync_actor(seen, "critter:" + crid, Vector3(float(crx), OakhavenDiorama.tile_elevation(zid, crx, cry), float(cry)), -1,
+			func() -> Node3D: return make_town_cat())
 
 	for l_var: Variant in (zone.get("loot", []) as Array):
 		var l: Dictionary = l_var as Dictionary
@@ -1023,10 +1099,10 @@ func _set_layer(n: Node, layer: int) -> void:
 const FIGURE_DIR := "res://assets/models/figures/"
 const PLAYER_FIGURES := {"Vanguard": "fig_vanguard"}
 const COMPANION_FIGURES := {"silverwind_lynx": "fig_lynx", "SilverwindLynx": "fig_lynx"}
-const NPC_FIGURES := {"torin": "fig_npc_torin", "mira": "fig_npc_mira", "vance": "fig_npc_vance", "vex": "fig_npc_vex", "pell": "fig_npc_pell", "wren": "fig_npc_wren", "lyra": "fig_npc_lyra", "corvus": "fig_npc_corvus", "kaelen": "fig_npc_kaelen"}
+const NPC_FIGURES := {"torin": "fig_npc_torin", "mira": "fig_npc_mira", "vance": "fig_npc_vance", "vex": "fig_npc_vex", "pell": "fig_npc_pell", "wren": "fig_npc_wren", "lyra": "fig_npc_lyra", "corvus": "fig_npc_corvus", "kaelen": "fig_npc_kaelen", "orin": "fig_npc_orin", "tomas": "fig_npc_tomas"}
 const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver", "dread_wraith": "fig_dread_wraith", "rime_revenant": "fig_rime_revenant", "iron_golem": "fig_iron_golem", "cinder_wisp": "fig_cinder_wisp", "obsidian_warden": "fig_obsidian_warden", "spore_hulk": "fig_spore_hulk", "boss_bone_cantor": "fig_boss_bone_cantor", "boss_ashen_inquisitor": "fig_boss_ashen_inquisitor", "boss_malakor": "fig_boss_malakor"}
 ## Figure height in tiles (before the actor's scale factor).
-const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_npc_torin": 1.24, "fig_npc_mira": 1.26, "fig_npc_vance": 1.32, "fig_npc_vex": 1.28, "fig_npc_pell": 1.26, "fig_npc_wren": 1.26, "fig_npc_lyra": 1.26, "fig_npc_corvus": 1.30, "fig_npc_kaelen": 1.34, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54, "fig_boss_bone_cantor": 1.38, "fig_boss_ashen_inquisitor": 1.42, "fig_boss_malakor": 1.48}
+const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_npc_torin": 1.24, "fig_npc_mira": 1.26, "fig_npc_vance": 1.32, "fig_npc_vex": 1.28, "fig_npc_pell": 1.26, "fig_npc_wren": 1.26, "fig_npc_lyra": 1.26, "fig_npc_corvus": 1.30, "fig_npc_kaelen": 1.34, "fig_npc_orin": 1.26, "fig_npc_tomas": 1.18, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54, "fig_boss_bone_cantor": 1.38, "fig_boss_ashen_inquisitor": 1.42, "fig_boss_malakor": 1.48}
 const PLINTH_H := 0.09
 const RIM_PLAYER := Color(0.30, 0.55, 1.00)
 const RIM_COMPANION := Color(0.22, 0.86, 0.78)
@@ -1047,42 +1123,95 @@ func figure_scene(stem: String) -> PackedScene:
 
 ## Root (lerped to the tile) -> "Body" pivot (juice transforms) ->
 ## plinth + "Model" pivot (facing yaw) -> figure or capsule.
-func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Color.WHITE, is_boss := false) -> Node3D:
+func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Color.WHITE, is_boss := false, plinth_style := "combat") -> Node3D:
 	var root := Node3D.new()
 	var body := Node3D.new()
 	body.name = "Body"
 	root.add_child(body)
 
+	# Grounded contact shadow disc under every miniature plinth.
+	var shadow_disc := MeshInstance3D.new()
+	var scyl := CylinderMesh.new()
+	scyl.top_radius = 0.50 if is_boss else 0.42
+	scyl.bottom_radius = 0.50 if is_boss else 0.42
+	scyl.height = 0.01
+	scyl.radial_segments = 20
+	shadow_disc.mesh = scyl
+	shadow_disc.position.y = 0.006
+	shadow_disc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var smat := StandardMaterial3D.new()
+	smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	smat.albedo_color = Color(0.03, 0.03, 0.04, 0.46)
+	shadow_disc.material_override = smat
+	body.add_child(shadow_disc)
+
 	var plinth_h := PLINTH_H * 1.25 if is_boss else PLINTH_H
+	var plinth_segs := 28 if is_boss else 24
+	var top_rad := 0.40 if is_boss else 0.34
+	var bot_rad := 0.45 if is_boss else 0.38
+	var plinth_col := Color(0.14, 0.10, 0.08) if is_boss else Color(0.20, 0.13, 0.08)
+	var ring_col := Color(0.95, 0.74, 0.22) if is_boss else rim
+	var ring_emit := 0.65 if is_boss else 0.50
+	var ring_metal := 0.85 if is_boss else 0.0
+
+	match plinth_style:
+		"npc_quest":
+			plinth_h = 0.065
+			plinth_segs = 8 # octagonal carved stone & brass
+			top_rad = 0.35
+			bot_rad = 0.39
+			plinth_col = Color(0.28, 0.26, 0.24)
+			ring_col = Color(1.0, 0.82, 0.30)
+			ring_emit = 0.45
+			ring_metal = 0.65
+		"npc_merchant":
+			plinth_h = 0.055
+			plinth_segs = 16 # beveled warm timber
+			top_rad = 0.34
+			bot_rad = 0.37
+			plinth_col = Color(0.27, 0.17, 0.09)
+			ring_col = Color(0.92, 0.56, 0.24)
+			ring_emit = 0.32
+		"npc_folk":
+			plinth_h = 0.038
+			plinth_segs = 24 # ultra-low mossy stone disc
+			top_rad = 0.32
+			bot_rad = 0.34
+			plinth_col = Color(0.24, 0.26, 0.22)
+			ring_col = Color(0.48, 0.62, 0.50)
+			ring_emit = 0.14
+
 	var plinth := MeshInstance3D.new()
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.40 if is_boss else 0.34
-	cyl.bottom_radius = 0.45 if is_boss else 0.38
+	cyl.top_radius = top_rad
+	cyl.bottom_radius = bot_rad
 	cyl.height = plinth_h
-	cyl.radial_segments = 28 if is_boss else 24
+	cyl.radial_segments = plinth_segs
 	plinth.mesh = cyl
 	plinth.position.y = plinth_h * 0.5
 	var pm := StandardMaterial3D.new()
-	pm.albedo_color = Color(0.14, 0.10, 0.08) if is_boss else Color(0.20, 0.13, 0.08)
-	pm.roughness = 0.45 if is_boss else 0.55
+	pm.albedo_color = plinth_col
+	pm.roughness = 0.45 if is_boss else 0.58
 	plinth.material_override = pm
 	body.add_child(plinth)
 
 	var ring := MeshInstance3D.new()
+	ring.name = "PlinthRing"
 	var rc := CylinderMesh.new()
-	rc.top_radius = 0.465 if is_boss else 0.395
-	rc.bottom_radius = 0.475 if is_boss else 0.40
-	rc.height = 0.045 if is_boss else 0.035
-	rc.radial_segments = 28 if is_boss else 24
+	rc.top_radius = bot_rad + 0.015
+	rc.bottom_radius = bot_rad + 0.020
+	rc.height = 0.045 if is_boss else 0.028
+	rc.radial_segments = plinth_segs
 	ring.mesh = rc
 	ring.position.y = rc.height * 0.5
 	var rm := StandardMaterial3D.new()
-	rm.albedo_color = Color(0.95, 0.74, 0.22) if is_boss else rim
-	rm.metallic = 0.85 if is_boss else 0.0
-	rm.roughness = 0.25 if is_boss else 0.5
+	rm.albedo_color = ring_col
+	rm.metallic = ring_metal
+	rm.roughness = 0.28 if is_boss else 0.5
 	rm.emission_enabled = true
-	rm.emission = rim
-	rm.emission_energy_multiplier = 0.65 if is_boss else 0.5
+	rm.emission = ring_col
+	rm.emission_energy_multiplier = ring_emit
 	ring.material_override = rm
 	body.add_child(ring)
 
@@ -1183,6 +1312,131 @@ func add_label(parent: Node3D, text: String) -> void:
 	parent.add_child(label)
 
 
+func _npc_plinth_style(nid: String, marker: String) -> String:
+	if marker == "turnin" or marker == "offer" or nid == "vance":
+		return "npc_quest"
+	if nid in ["torin", "mira", "vex", "bram", "halda", "orin"]:
+		return "npc_merchant"
+	return "npc_folk"
+
+
+func _npc_rest_yaw(nid: String) -> float:
+	match nid:
+		"torin":
+			return 0.25
+		"mira":
+			return -0.35
+		"vance":
+			return -2.75 # watches the breach behind him / player ahead
+		"vex":
+			return 1.35 # leans east out of the SW alley
+		"pell":
+			return -0.60
+		"wren":
+			return 1.45 # faces Candle Shrine
+		_:
+			return 0.0
+
+
+func _npc_role_tag(nid: String) -> String:
+	match nid:
+		"torin":
+			return "⚒ Forge"
+		"mira":
+			return "✦ Potions & Rest"
+		"vex":
+			return "◈ Broker"
+		"vance":
+			return "Watch Captain"
+		_:
+			return ""
+
+
+func add_npc_labels(parent: Node3D, nid: String, nname: String) -> void:
+	var name_lbl := Label3D.new()
+	name_lbl.name = "NpcNameLabel"
+	var role := _npc_role_tag(nid)
+	name_lbl.text = nname if role == "" else "%s\n%s" % [nname, role]
+	name_lbl.font_size = 40 if role != "" else 34
+	name_lbl.pixel_size = 0.006
+	name_lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	name_lbl.modulate = Color(0.98, 0.96, 0.88) if role != "" else Color(0.84, 0.86, 0.82)
+	name_lbl.outline_size = 8
+	name_lbl.outline_modulate = Color(0.05, 0.05, 0.08)
+	name_lbl.position = Vector3(0.0, 1.62, 0.0)
+	parent.add_child(name_lbl)
+
+	var badge := Label3D.new()
+	badge.name = "NpcBadgeLabel"
+	badge.text = ""
+	badge.font_size = 68
+	badge.pixel_size = 0.0075
+	badge.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	badge.modulate = Color(1.0, 0.90, 0.30)
+	badge.outline_size = 10
+	badge.outline_modulate = Color(0.08, 0.05, 0.02)
+	badge.position = Vector3(0.0, 2.30, 0.0)
+	badge.visible = false
+	parent.add_child(badge)
+
+
+func _update_npc_badge_and_plinth(n: Node3D, _nid: String, _nname: String, marker: String) -> void:
+	if n == null:
+		return
+	var badge := n.get_node_or_null("NpcBadgeLabel") as Label3D
+	if badge != null:
+		if marker == "turnin":
+			badge.text = "?"
+			badge.modulate = Color(1.0, 0.92, 0.35)
+			badge.visible = true
+		elif marker == "offer":
+			badge.text = "!"
+			badge.modulate = Color(1.0, 0.86, 0.25)
+			badge.visible = true
+		else:
+			badge.visible = false
+
+
+func make_town_cat() -> Node3D:
+	var root := Node3D.new()
+	var fur := Color(0.86, 0.56, 0.24)
+	var cream := Color(0.96, 0.88, 0.74)
+	var body := MeshInstance3D.new()
+	var bmesh := BoxMesh.new()
+	bmesh.size = Vector3(0.24, 0.20, 0.32)
+	body.mesh = bmesh
+	body.position = Vector3(0.0, 0.10, 0.0)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = fur
+	body.material_override = mat
+	root.add_child(body)
+	var head := MeshInstance3D.new()
+	var hmesh := BoxMesh.new()
+	hmesh.size = Vector3(0.18, 0.16, 0.18)
+	head.mesh = hmesh
+	head.position = Vector3(0.0, 0.24, 0.10)
+	head.material_override = mat
+	root.add_child(head)
+	var chest := MeshInstance3D.new()
+	var cmesh := BoxMesh.new()
+	cmesh.size = Vector3(0.14, 0.12, 0.06)
+	chest.mesh = cmesh
+	chest.position = Vector3(0.0, 0.12, 0.16)
+	var cmat := StandardMaterial3D.new()
+	cmat.albedo_color = cream
+	chest.material_override = cmat
+	root.add_child(chest)
+	for sx: float in [-0.06, 0.06]:
+		var ear := MeshInstance3D.new()
+		var emesh := BoxMesh.new()
+		emesh.size = Vector3(0.05, 0.07, 0.04)
+		ear.mesh = emesh
+		ear.position = Vector3(sx, 0.34, 0.12)
+		ear.material_override = mat
+		root.add_child(ear)
+	return root
+
+
 # ---------------------------------------------------------------------------
 # Camera, input, per-frame updates
 # ---------------------------------------------------------------------------
@@ -1196,8 +1450,32 @@ func _process(delta: float) -> void:
 			var tgt: Vector3 = entity_targets[node] as Vector3
 			node.position = node.position.lerp(tgt, w)
 	_drain_cues(delta)
+	_animate_town_npcs(delta)
 	update_camera(delta)
 	update_held_movement(delta)
+
+
+func _animate_town_npcs(delta: float) -> void:
+	var t := float(Time.get_ticks_msec()) * 0.001
+	for key_var: Variant in entity_nodes.keys():
+		var key := str(key_var)
+		if not key.begins_with("npc:"):
+			continue
+		var n := entity_nodes[key] as Node3D
+		if n == null or not is_instance_valid(n):
+			continue
+		var phase := _as_float(n.get_meta("idle_phase", 0.0))
+		var body := n.get_node_or_null("Body") as Node3D
+		if body != null:
+			body.scale.y = 1.0 + sin(t * 2.1 + phase) * 0.016
+		var model := n.get_node_or_null("Body/Model") as Node3D
+		if model != null:
+			var goal_yaw := _as_float(n.get_meta("rest_yaw", 0.0)) + sin(t * 1.15 + phase) * 0.06
+			if player_node != null and n.position.distance_to(player_node.position) <= 3.0:
+				var to_p := player_node.position - n.position
+				if to_p.length() > 0.1:
+					goal_yaw = atan2(to_p.x, to_p.z)
+			model.rotation.y = lerp_angle(model.rotation.y, goal_yaw, minf(1.0, delta * 5.0))
 
 
 func update_camera(delta: float) -> void:
@@ -1389,7 +1667,7 @@ func build_ui() -> void:
 	log_label.add_theme_color_override("default_color", Color(UI_INK, 0.92))
 	log_panel.add_child(log_label)
 
-	# Town panel, right side (visible in town zones only).
+	# Town panel, right side (retired in Pitch C when ENABLE_TOWN_REBUILD_UI is false).
 	town_panel = make_panel()
 	town_panel.anchor_left = 1.0
 	town_panel.anchor_right = 1.0
@@ -1406,6 +1684,20 @@ func build_ui() -> void:
 	town_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	town_box.add_theme_constant_override("separation", 4)
 	town_scroll.add_child(town_box)
+
+	# Compact Quest Tracker, top-right.
+	quest_panel = make_panel()
+	quest_panel.anchor_left = 1.0
+	quest_panel.anchor_right = 1.0
+	quest_panel.offset_left = -270
+	quest_panel.offset_right = -10
+	quest_panel.offset_top = 10
+	quest_panel.offset_bottom = 175
+	layer.add_child(quest_panel)
+	quest_box = VBoxContainer.new()
+	quest_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	quest_box.add_theme_constant_override("separation", 3)
+	quest_panel.add_child(quest_box)
 
 	# Dialogue panel, bottom-centre.
 	dialogue_panel = make_panel()
@@ -1617,6 +1909,9 @@ func update_log() -> void:
 
 func rebuild_town_panel() -> void:
 	clear_children(town_box)
+	if not ENABLE_TOWN_REBUILD_UI:
+		town_panel.hide()
+		return
 	var zone: Dictionary = state["zone"]
 	if not _as_bool(zone.get("isTown", false)):
 		town_panel.hide()
@@ -1760,6 +2055,61 @@ func rebuild_town_panel() -> void:
 		sl.text = "%s %s" % ["✓" if has_s else "○", str(sd[1])]
 		sl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_s else Color(0.68, 0.72, 0.78))
 		town_box.add_child(sl)
+
+
+func rebuild_quest_tracker() -> void:
+	clear_children(quest_box)
+	if ENABLE_TOWN_REBUILD_UI and _as_bool((state.get("zone", {}) as Dictionary).get("isTown", false)):
+		quest_panel.hide()
+		return
+	var rows: Array = state.get("questTracker", []) as Array
+	if rows.is_empty():
+		quest_panel.hide()
+		return
+	quest_panel.show()
+	var has_active := false
+	for r_var: Variant in rows:
+		var r: Dictionary = r_var as Dictionary
+		if str(r.get("status", "")) != "lead":
+			has_active = true
+			break
+	var head := make_label()
+	head.add_theme_font_size_override("font_size", 15)
+	head.add_theme_color_override("font_color", UI_GOLD)
+	head.text = "Active Quests" if has_active else "Oakhaven Leads"
+	quest_box.add_child(head)
+	for i: int in mini(rows.size(), 4):
+		var r: Dictionary = rows[i] as Dictionary
+		var status := str(r.get("status", "lead"))
+		var icon := "★" if status == "turnin" else ("•" if status == "active" else "›")
+		var title_l := make_label()
+		title_l.add_theme_font_size_override("font_size", 13)
+		title_l.add_theme_color_override("font_color", Color(1.0, 0.90, 0.42) if status == "turnin" else UI_INK)
+		title_l.text = "%s %s" % [icon, str(r.get("title", ""))]
+		quest_box.add_child(title_l)
+		var hint_txt := str(r.get("hint", ""))
+		if hint_txt != "":
+			var hint_l := make_label()
+			hint_l.add_theme_font_size_override("font_size", 11)
+			hint_l.add_theme_color_override("font_color", Color(0.80, 0.76, 0.68))
+			hint_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			hint_l.custom_minimum_size = Vector2(236, 0)
+			hint_l.text = "  " + hint_txt
+			quest_box.add_child(hint_l)
+	quest_panel.reset_size()
+
+
+func _apply_unlit_capture_mode() -> void:
+	sun.visible = false
+	for c: Node in landmarks_root.get_children():
+		if c is OmniLight3D:
+			(c as OmniLight3D).visible = false
+	var we := $WorldEnvironment as WorldEnvironment
+	var env := we.environment
+	env.fog_enabled = false
+	env.glow_enabled = false
+	env.ambient_light_color = Color(0.85, 0.85, 0.85)
+	env.ambient_light_energy = 0.85
 
 
 func _on_complete_blacksmith(lot: String) -> void:

@@ -52,3 +52,9 @@ Garth picked all four; take them in this order unless he says otherwise:
 3. [x] **Title & save slots** — done Nov 22: full-screen title (`godot/title_screen.gd`) over crypt backdrop, 3 independent save slots with Continue / two-click Delete & overwrite confirmation, starting discipline + difficulty choice (Story / Standard / Hardened via `new_game_with_difficulty`), and app icon (`godot/assets/icon/elfstory_icon.png`).
 4. [x] **Town loop feel** — done Nov 22: cold forge ruin at `(7, 2)` and marked build lots before completion, rebuilt `blacksmith.glb` + build/tier-up celebration VFX/SFX on chosen lot, visible Tier 1–3 ActRaiser growth structures (gardens, settler cottages, arbor, platypus, grove), regional supply shop refresh on banking, and upgraded `TownPanel`.
 Also open: Garth's playtest notes from the app (all 4 combat gaps closed Nov 22).
+
+## Retired / Dormant Systems (Nov 24, 2026 — Oakhaven Pitch C Redesign)
+Town-rebuilding UI in Oakhaven is retired/hidden (`godot/Main.gd` `ENABLE_TOWN_REBUILD_UI := false`) while keeping the underlying Rust implementation intact so it can be restored or deleted cleanly later:
+- `godot/Main.gd`: `ENABLE_TOWN_REBUILD_UI`, `rebuild_town_panel()`, `build_lot_markers()`
+- `rust/elfstory-core/src/town.rs` & `rust/elfstory-core/src/town_layout.rs` (rebuild pieces, Heartcoal stall, 3 lots, ActRaiser growth placements, regional supplies)
+- `rust/elfstory-core/src/session.rs`: `complete_blacksmith`, `relocate_blacksmith`, `return_to_oakhaven` banking/ticking

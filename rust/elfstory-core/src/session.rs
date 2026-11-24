@@ -211,7 +211,7 @@ impl GameSession {
             kills_this_delve: 0,
             seq: 1000,
         };
-        s.say("Welcome to Oakhaven. The Reliquary below holds what the town needs.");
+        s.say("Welcome to Oakhaven Waystation. Warden Vance holds watch at the breach ahead; the Sunken Reliquary stairs descend into the pit.");
         s.refresh_visibility();
         s
     }
@@ -1447,6 +1447,235 @@ impl GameSession {
             .collect()
     }
 
+    fn has_quest_item(&self, tag: &str) -> bool {
+        self.player
+            .inventory
+            .iter()
+            .any(|i| i.quest_tag.as_deref() == Some(tag))
+    }
+
+    /// Per-NPC role/quest markers ("turnin" | "offer") for overhead badges.
+    pub fn npc_markers_json(&self) -> Value {
+        let mut map = serde_json::Map::new();
+        let has_ledger = self.has_quest_item("smuggler_ledger");
+        let has_herb = self.has_quest_item("pale_nightbloom");
+        let has_bell = self.has_quest_item("whispering_bell");
+        let has_satchel = self.has_quest_item("wayfarer_satchel");
+        let has_bog_heart = self.has_quest_item("fungal_heart");
+        let has_barrow_seal = self.has_quest_item("barrow_seal");
+        let has_caldera_heart = self.has_quest_item("caldera_heart");
+
+        let is_active = |id: &str| crate::npcs::is_quest_active(&self.quests, id);
+        let not_started = |id: &str| !self.quests.contains_key(id);
+
+        if is_active("shadows_beneath") && has_ledger {
+            map.insert("vance".into(), json!("turnin"));
+            map.insert("vex".into(), json!("turnin"));
+        } else if not_started("shadows_beneath") {
+            map.insert("vance".into(), json!("offer"));
+            map.insert("vex".into(), json!("offer"));
+        }
+
+        if is_active("herbalist_blight")
+            && (has_herb || self.flags.cantor_defeated == Some(true))
+        {
+            map.insert("mira".into(), json!("turnin"));
+        } else if not_started("herbalist_blight") {
+            map.insert("mira".into(), json!("offer"));
+        }
+
+        if is_active("whispering_bell") && has_bell {
+            map.insert("lyra".into(), json!("turnin"));
+            map.insert("corvus".into(), json!("turnin"));
+        } else if not_started("whispering_bell") {
+            map.insert("lyra".into(), json!("offer"));
+            map.insert("corvus".into(), json!("offer"));
+        }
+
+        if is_active("sovereign_cinder") && self.flags.malakor_defeated == Some(true) {
+            map.insert("kaelen".into(), json!("turnin"));
+        } else if not_started("sovereign_cinder") {
+            map.insert("kaelen".into(), json!("offer"));
+        }
+
+        if is_active("silverwood_road") && has_satchel {
+            map.insert("rowan".into(), json!("turnin"));
+        } else if not_started("silverwood_road") {
+            map.insert("rowan".into(), json!("offer"));
+        }
+
+        if is_active("spores_of_bog") && has_bog_heart {
+            map.insert("sylva".into(), json!("turnin"));
+        } else if not_started("spores_of_bog") {
+            map.insert("sylva".into(), json!("offer"));
+        }
+
+        if is_active("barrow_purge") && has_barrow_seal {
+            map.insert("darek".into(), json!("turnin"));
+        } else if not_started("barrow_purge") {
+            map.insert("darek".into(), json!("offer"));
+        }
+
+        if is_active("cinder_and_frost") && has_caldera_heart {
+            map.insert("halda".into(), json!("turnin"));
+        } else if not_started("cinder_and_frost") {
+            map.insert("halda".into(), json!("offer"));
+        }
+
+        Value::Object(map)
+    }
+
+    /// Compact quest-tracker rows for the top-right HUD.
+    pub fn quest_tracker_json(&self) -> Value {
+        let mut items: Vec<Value> = Vec::new();
+        for (qid, prog) in &self.quests {
+            if prog.status != QuestStatus::Active {
+                continue;
+            }
+            let title = crate::npcs::quest_def(qid)
+                .map(|d| d.title)
+                .unwrap_or(qid.as_str());
+            let (status, target_npc, hint): (&str, &str, String) = match qid.as_str() {
+                "shadows_beneath" => {
+                    if self.has_quest_item("smuggler_ledger") {
+                        (
+                            "turnin",
+                            "Warden Vance / Vex",
+                            "Return Sealed Ledger to Vance (breach) or Vex (SW alcove)".into(),
+                        )
+                    } else {
+                        (
+                            "active",
+                            "Sunken Reliquary Fl.1",
+                            "Find the Sealed Contraband Ledger on Floor 1".into(),
+                        )
+                    }
+                }
+                "herbalist_blight" => {
+                    if self.has_quest_item("pale_nightbloom")
+                        || self.flags.cantor_defeated == Some(true)
+                    {
+                        (
+                            "turnin",
+                            "Herbalist Mira",
+                            "Report back to Herbalist Mira (NE terrace)".into(),
+                        )
+                    } else {
+                        (
+                            "active",
+                            "Reliquary Fl.1–2",
+                            "Gather Pale Nightbloom or quell the Bone Cantor".into(),
+                        )
+                    }
+                }
+                "whispering_bell" => {
+                    if self.has_quest_item("whispering_bell") {
+                        ("turnin", "Lyra / Corvus", "Return the Whispering Bell in Highspire".into())
+                    } else {
+                        ("active", "Floor 3", "Recover the bronze bell from Ember Vaults (Fl.3)".into())
+                    }
+                }
+                "sovereign_cinder" => {
+                    if self.flags.malakor_defeated == Some(true) {
+                        ("turnin", "Guildmaster Kaelen", "Report Malakor's fall to Kaelen in Highspire".into())
+                    } else {
+                        ("active", "Floor 5", "Defeat Malakor in the Obsidian Sanctum (Fl.5)".into())
+                    }
+                }
+                "outrider_oath" => {
+                    let count = self.flags.waystones_attuned.unwrap_or(0);
+                    if count >= 2 {
+                        ("turnin", "Archivist Lyra", "Return to Archivist Lyra in Highspire".into())
+                    } else {
+                        ("active", "Floors 1–4", format!("Attune Elven Waystones ({count}/2)"))
+                    }
+                }
+                "silverwood_road" => {
+                    if self.has_quest_item("wayfarer_satchel") {
+                        ("turnin", "Rowan", "Return Rowan's Stolen Satchel".into())
+                    } else {
+                        ("active", "Silverwood Vale", "Cross Silverbridge & reclaim Rowan's Satchel".into())
+                    }
+                }
+                "spores_of_bog" => {
+                    if self.has_quest_item("fungal_heart") {
+                        ("turnin", "Elder Sylva", "Return Fungal Heart to Thornwick Fen".into())
+                    } else {
+                        ("active", "Fungal Hollow", "Slay Spore-Matron Vexis east of Thornwick".into())
+                    }
+                }
+                "barrow_purge" => {
+                    if self.has_quest_item("barrow_seal") {
+                        ("turnin", "Captain Darek", "Return Barrow Seal to Cinderwatch".into())
+                    } else {
+                        ("active", "Whispering Barrow", "Slay Arch-Wight Morvath in Whispering Barrow".into())
+                    }
+                }
+                "cinder_and_frost" => {
+                    if self.has_quest_item("caldera_heart") {
+                        ("turnin", "Forgemistress Halda", "Return Ashen Ore Heart to Cinderwatch".into())
+                    } else {
+                        ("active", "Frostpeak Cavern", "Slay Ignis-Warden Kaelthar in Frostpeak".into())
+                    }
+                }
+                "deep_survey" => {
+                    let count = prog.stage;
+                    if count >= 6 {
+                        ("turnin", "Rowan", "Return completed survey to Rowan".into())
+                    } else {
+                        ("active", "Towns & Vaults", format!("Transcribe carved steles ({count}/6)"))
+                    }
+                }
+                _ => ("active", "", prog.history.last().cloned().unwrap_or_default()),
+            };
+            items.push(json!({
+                "id": qid,
+                "title": title,
+                "targetNpc": target_npc,
+                "status": status,
+                "hint": hint,
+            }));
+        }
+        items.sort_by(|a, b| {
+            let sa = a["status"].as_str().unwrap_or("");
+            let sb = b["status"].as_str().unwrap_or("");
+            let ra = if sa == "turnin" { 0 } else { 1 };
+            let rb = if sb == "turnin" { 0 } else { 1 };
+            ra.cmp(&rb).then_with(|| {
+                a["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["id"].as_str().unwrap_or(""))
+            })
+        });
+        if items.is_empty() {
+            items = vec![
+                json!({
+                    "id": "lead_vance",
+                    "title": "Speak with Warden Vance",
+                    "targetNpc": "vance",
+                    "status": "lead",
+                    "hint": "South breach overlook (right ahead)",
+                }),
+                json!({
+                    "id": "lead_mira",
+                    "title": "Rest & Draughts",
+                    "targetNpc": "mira",
+                    "status": "lead",
+                    "hint": "Mira (NE terrace) or Candle Shrine (SE)",
+                }),
+                json!({
+                    "id": "lead_descent",
+                    "title": "Sunken Reliquary",
+                    "targetNpc": "",
+                    "status": "lead",
+                    "hint": "Descend the stone stairs into the central breach",
+                }),
+            ];
+        }
+        Value::Array(items)
+    }
+
     /// JSON snapshot for the Godot front-end.
     pub fn state_json(&self) -> Value {
         let zone = self.zone();
@@ -1454,6 +1683,21 @@ impl GameSession {
             .tiles
             .iter()
             .map(|row| row.iter().map(|t| t.kind.as_str().to_string()).collect())
+            .collect();
+        let critters: Vec<Value> = zone
+            .critters
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "kind": c.kind.as_str(),
+                    "name": c.name,
+                    "x": c.x,
+                    "y": c.y,
+                })
+            })
             .collect();
         json!({
             "zone": {
@@ -1481,6 +1725,7 @@ impl GameSession {
                 "npcs": zone.npcs.iter().map(|n| json!({
                     "id": n.id, "name": n.name, "title": n.title, "glyph": n.glyph, "x": n.x, "y": n.y,
                 })).collect::<Vec<_>>(),
+                "critters": critters,
                 "loot": zone.loot.iter().map(|l| json!({
                     "x": l.x, "y": l.y, "gold": l.gold,
                     "itemName": l.item.as_ref().map(|i| i.name.clone()),
@@ -1493,6 +1738,8 @@ impl GameSession {
             "townTierBonuses": crate::town::get_town_tier_bonuses(Some(&self.town)),
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
+            "questTracker": self.quest_tracker_json(),
+            "npcMarkers": self.npc_markers_json(),
             "carriedTownTags": self.carried_town_tags(),
             "prompt": self.active_prompt.as_ref().map(|p| p.kind.as_str()),
             "hotbar": self.hotbar_json(),
@@ -1835,5 +2082,99 @@ mod tests {
             s.merchant_stock("blacksmith").iter().any(|i| i.name == "Barrow-Iron Hauberk"),
             "supply banked after completion refreshes cached blacksmith stock"
         );
+    }
+
+    #[test]
+    fn quest_tracker_targets_correct_npcs_through_lifecycle() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 42);
+        let markers0 = s.npc_markers_json();
+        assert_eq!(markers0["vance"], "offer");
+        assert_eq!(markers0["vex"], "offer");
+        assert_eq!(markers0["mira"], "offer");
+        let tracker0 = s.quest_tracker_json();
+        let arr0 = tracker0.as_array().unwrap();
+        assert_eq!(arr0[0]["id"], "lead_vance");
+        assert_eq!(arr0[0]["targetNpc"], "vance");
+
+        // Accept shadows_beneath from Vance.
+        s.active_dialogue = Some(("vance".into(), "root".into()));
+        s.choose_dialogue("start_shadows");
+        s.choose_dialogue("accept");
+        s.close_dialogue();
+
+        let markers1 = s.npc_markers_json();
+        assert!(markers1.get("vance").is_none());
+        let tracker1 = s.quest_tracker_json();
+        let row1 = tracker1.as_array().unwrap().iter().find(|r| r["id"] == "shadows_beneath").unwrap();
+        assert_eq!(row1["status"], "active");
+
+        // Pick up Sealed Contraband Ledger -> turn-in ready.
+        s.player.inventory.push(crate::world::create_quest_item_local("smuggler_ledger", 9001));
+        let markers2 = s.npc_markers_json();
+        assert_eq!(markers2["vance"], "turnin");
+        assert_eq!(markers2["vex"], "turnin");
+        let tracker2 = s.quest_tracker_json();
+        let row2 = tracker2.as_array().unwrap().iter().find(|r| r["id"] == "shadows_beneath").unwrap();
+        assert_eq!(row2["status"], "turnin");
+        assert_eq!(row2["targetNpc"], "Warden Vance / Vex");
+
+        // Turn in to Vance -> quest leaves active tracker.
+        s.active_dialogue = Some(("vance".into(), "root".into()));
+        s.choose_dialogue("turn_in_ledger");
+        s.choose_dialogue("claim_vance");
+        s.close_dialogue();
+        assert!(
+            !s.quest_tracker_json().as_array().unwrap().iter().any(|r| r["id"] == "shadows_beneath"),
+            "completed quest leaves active tracker"
+        );
+    }
+
+    #[test]
+    fn oakhaven_shrine_restores_hp_and_mp() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        s.player.hp = 5;
+        s.player.mana = 1;
+        // Stand east of the shrine (20, 13) so Sister Wren (18, 13) is not also adjacent.
+        s.player.x = 20;
+        s.player.y = 13;
+        s.interact();
+        let d = s.derived();
+        assert_eq!(s.player.hp, d.max_hp);
+        assert_eq!(s.player.mana, d.max_mana);
+    }
+
+    #[test]
+    fn first_hour_oakhaven_flow() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 99);
+        assert_eq!(s.current, ZoneId::Oakhaven);
+        // Spawn at (13, 13), step north toward Vance (14, 12).
+        s.move_player(0, -1);
+        assert_eq!(s.interact(), SessionEvent::OpenDialogue("vance".into()));
+        s.choose_dialogue("start_shadows");
+        s.choose_dialogue("accept");
+        s.close_dialogue();
+        assert!(crate::npcs::is_quest_active(&s.quests, "shadows_beneath"));
+
+        // Visit Torin (7, 4) -> shop opens.
+        s.player.x = 7;
+        s.player.y = 5;
+        assert_eq!(s.interact(), SessionEvent::OpenDialogue("torin".into()));
+        assert_eq!(s.choose_dialogue("trade"), SessionEvent::OpenMerchant("torin".into()));
+        s.close_dialogue();
+
+        // Visit Mira (22, 4) -> rest full.
+        s.player.hp = 10;
+        s.player.x = 22;
+        s.player.y = 5;
+        assert_eq!(s.interact(), SessionEvent::OpenDialogue("mira".into()));
+        s.choose_dialogue("heal_free");
+        s.close_dialogue();
+        assert_eq!(s.player.hp, s.derived().max_hp);
+
+        // Descend central stairs (13, 9) -> (13, 8) into dungeon_1.
+        s.player.x = 13;
+        s.player.y = 9;
+        assert_eq!(s.move_player(0, -1), SessionEvent::ZoneChanged(ZoneId::Dungeon(1)));
+        assert_eq!(s.current, ZoneId::Dungeon(1));
     }
 }

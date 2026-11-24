@@ -312,55 +312,64 @@ pub const TORIN_FORGE_FOOTPRINT: (i32, i32, i32, i32) = (5, 9, 1, 3);
 pub fn create_oakhaven_map() -> ZoneMap {
     let layout: [&str; 17] = [
         "♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣",
-        "♣♣...#####..♣....♣..#####..♣",
-        "♣.♣..#...#........♣.#...#..♣",
+        "♣♣...#####..♣..♣....#####..♣",
+        "♣....#...#..........#...#..♣",
         "♣....##+##..........##+##..♣",
-        "♣......░.Π.Π..........░.♣..♣",
-        "♣......░.......Π....✿.░✿.✿.♣",
-        "♣..♣...░....*.*.....┼✿░*║.║♣",
-        "Ω░░░░░░░░░░░░◎░░░░░░░░░░..░♣",
-        "♣............░.........░>>░♣",
-        "♣.♣.♣........░.........░░░*♣",
-        "♣.....♣......░░░░░░░......♣♣",
-        "♣....................≈≈≈≈..♣",
-        "♣..###..✿.✿...#####.≈≈≈≈≈≈.♣",
-        "♣..#.+...✿....#...+.≈≈≈≈≈≈≈♣",
-        "♣..###........#####♣.≈≈≈≈≈≈≈♣",
-        "♣..........♣..........≈≈≈≈.♣",
+        "♣......░.Π.Π.....✿....░.✿..♣",
+        "♣..♣...░*...........*.░.✿..♣",
+        "♣....░░░░░░░░░░░░░░░░░░....♣",
+        "Ω░░░░░...║~~~~~~~║...░░░♣..♣",
+        "♣..*.░...~~~>>>~~~...░*≈≈≈.♣",
+        "♣....░...~~~░░░~~~...░≈≈≈≈.♣",
+        "♣....░...~~~~░~~~~...░≈≈≈≈.♣",
+        "♣....░...║~~~░~~~║...░≈≈≈≈.♣",
+        "♣....░░░░░░░░░░░░░░░░░.≈≈..♣",
+        "♣..♣.░.......░.....┼..♣....♣",
+        "♣...Π░.......░.............♣",
+        "♣..♣......♣.....♣.....♣....♣",
         "♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣♣",
     ];
     let npcs = vec![
         npc("torin", 7, 4, "#F59E0B", "Torin Ironhand", "Blacksmith & Forgemaster"),
         npc("mira", 22, 4, "#4EA885", "Herbalist Mira", "Apothecary"),
-        npc("vance", 14, 8, "#60A5FA", "Warden Vance", "Outpost Captain"),
+        npc("vance", 14, 12, "#60A5FA", "Warden Vance", "Outpost Captain"),
         npc("vex", 6, 13, "#C084FC", "Vex the Quiet", "Shadow Broker"),
         roaming_npc("pell", 10, 5, "#A8A29E", "Pell the Carter", "Outpost Carter"),
-        roaming_npc("wren", 19, 8, "#FDE68A", "Sister Wren", "Shrine Keeper"),
+        roaming_npc("wren", 18, 13, "#FDE68A", "Sister Wren", "Shrine Keeper"),
     ];
     let mut town = build_town_from_ascii(
         ZoneId::Oakhaven,
         "Oakhaven Outpost",
-        "Sunny Frontier Village",
+        "Breached Sinkhole Waystation",
         &layout,
         npcs,
-        Pos::new(13, 9),
-        Pos::new(13, 11),
+        Pos::new(13, 13),
+        Pos::new(13, 13),
     );
     town.tiles[7][0].label = Some("Silverwood Vale West Gate".to_string());
     // Phase 3 POI: the Old Outpost Oak — flavor landmark by the north wall.
     town.tiles[1][1].interact_id = Some("poi_old_oak".to_string());
     town.tiles[1][1].label = Some("The Old Outpost Oak".to_string());
-    town.critters = Some(vec![make_critter(CritterKind::TownCat, 15, 6, 1)]);
-    // Village pond in the south-east (Phase 7 village redo).
-    let pond: [(usize, usize); 27] = [
-        (21, 11), (22, 11), (23, 11), (24, 11),
-        (20, 12), (21, 12), (22, 12), (23, 12), (24, 12), (25, 12),
-        (20, 13), (21, 13), (22, 13), (23, 13), (24, 13), (25, 13), (26, 13),
-        (21, 14), (22, 14), (23, 14), (24, 14), (25, 14), (26, 14),
-        (22, 15), (23, 15), (24, 15), (25, 15),
+    town.critters = Some(vec![make_critter(CritterKind::TownCat, 16, 12, 1)]);
+    // East spring pond (Pitch C sinkhole waystation).
+    let pond: [(usize, usize); 17] = [
+        (23, 8), (24, 8), (25, 8),
+        (22, 9), (23, 9), (24, 9), (25, 9),
+        (22, 10), (23, 10), (24, 10), (25, 10),
+        (22, 11), (23, 11), (24, 11), (25, 11),
+        (23, 12), (24, 12),
     ];
     for (px, py) in pond {
-        town.tiles[py][px].label = Some("Oakhaven Pond".to_string());
+        town.tiles[py][px].label = Some("Oakhaven Spring Pond".to_string());
+    }
+    for row in town.tiles.iter_mut() {
+        for tile in row.iter_mut() {
+            if tile.kind == TileKind::Chasm {
+                tile.label = Some("Reliquary Breach Chasm".to_string());
+            } else if tile.kind == TileKind::StairsDown {
+                tile.label = Some("Sunken Reliquary Descent".to_string());
+            }
+        }
     }
     town
 }
@@ -3045,6 +3054,42 @@ mod tests {
     fn floor1(seed: u32) -> ZoneMap {
         let mut rng = Rng::new(seed);
         generate_dungeon_floor(1, &mut rng, DifficultyTier::Standard, 0)
+    }
+
+    #[test]
+    fn oakhaven_pitch_c_layout_dimensions_and_reachability() {
+        use std::collections::{HashSet, VecDeque};
+        let oakhaven = create_oakhaven_map();
+        assert_eq!((oakhaven.width, oakhaven.height), (28, 17));
+        assert_eq!(oakhaven.tiles.len(), 17);
+        for (y, row) in oakhaven.tiles.iter().enumerate() {
+            assert_eq!(row.len(), 28, "row {y} must be 28 tiles wide");
+        }
+        let mut reachable: HashSet<(i32, i32)> = HashSet::from([(oakhaven.spawn_point.x, oakhaven.spawn_point.y)]);
+        let mut queue: VecDeque<(i32, i32)> = VecDeque::from([(oakhaven.spawn_point.x, oakhaven.spawn_point.y)]);
+        while let Some((x, y)) = queue.pop_front() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= oakhaven.width || ny >= oakhaven.height {
+                    continue;
+                }
+                if !oakhaven.tiles[ny as usize][nx as usize].walkable || reachable.contains(&(nx, ny)) {
+                    continue;
+                }
+                reachable.insert((nx, ny));
+                queue.push_back((nx, ny));
+            }
+        }
+        let has_adjacent = |tx: i32, ty: i32| {
+            (-1..=1).any(|dy| (-1..=1).any(|dx| reachable.contains(&(tx + dx, ty + dy))))
+        };
+        for npc in &oakhaven.npcs {
+            assert!(has_adjacent(npc.x, npc.y), "NPC {} at ({}, {}) must be reachable", npc.id, npc.x, npc.y);
+        }
+        assert!(reachable.contains(&(0, 7)), "West Gate (0, 7) must be reachable");
+        assert!(reachable.contains(&(13, 8)), "Reliquary Descent (13, 8) must be reachable");
+        assert!(has_adjacent(19, 13), "Candle Shrine (19, 13) must be reachable");
+        assert!(has_adjacent(1, 1), "Old Outpost Oak (1, 1) must be reachable");
     }
 
     #[test]

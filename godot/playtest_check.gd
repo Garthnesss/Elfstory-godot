@@ -231,6 +231,30 @@ func _initialize() -> void:
 	else:
 		s.call("close_dialogue")
 
+	# --- 5b. Oakhaven Pitch C first-hour flow ---------------------------------
+	s.call("debug_warp", "oakhaven", 13, 13)
+	var st_oak := state()
+	var tracker_0: Array = st_oak.get("questTracker", []) as Array
+	if tracker_0.is_empty() or str((tracker_0[0] as Dictionary).get("targetNpc", "")) != "vance":
+		notes.append("questTracker at fresh Oakhaven spawn did not lead with vance")
+	s.call("debug_warp", "oakhaven", 13, 12)
+	s.call("interact")
+	s.call("choose_dialogue", "start_shadows")
+	s.call("choose_dialogue", "accept")
+	s.call("close_dialogue")
+	var st_after_q := state()
+	var tracker_1: Array = st_after_q.get("questTracker", []) as Array
+	var has_shadows := false
+	for r_var: Variant in tracker_1:
+		if r_var is Dictionary and str((r_var as Dictionary).get("id", "")) == "shadows_beneath":
+			has_shadows = true
+	if not has_shadows:
+		notes.append("questTracker did not show shadows_beneath after accepting from Vance")
+	s.call("debug_warp", "oakhaven", 13, 9)
+	var ev_descend: String = str(s.call("move_player", 0, -1))
+	if ev_descend != "zone_changed:dungeon_1":
+		notes.append("stepping onto Oakhaven central stairs (13,8) returned " + ev_descend)
+
 	# --- 6. Completed blacksmith -> merchant stock -----------------------------
 	s.call("debug_set_town", 12, "pondside")
 	var stock: Variant = JSON.parse_string(str(s.call("merchant_stock_json", "blacksmith")))

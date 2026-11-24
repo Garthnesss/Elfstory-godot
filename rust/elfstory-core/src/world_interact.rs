@@ -148,6 +148,19 @@ impl GameSession {
                 Some(SessionEvent::None)
             }
             TileKind::Waystone if !used => Some(self.open_waystone_prompt(x, y)),
+            TileKind::Shrine if tile.interact_id.as_deref() == Some("respec_shrine") => {
+                let d = self.derived();
+                self.player.hp = d.max_hp;
+                self.player.mana = d.max_mana;
+                self.fx("brazier", x, y);
+                self.say("Sister Wren's vigil candles warm your hands — HP and MP restored.");
+                Some(SessionEvent::None)
+            }
+            _ if tile.interact_id.as_deref() == Some("poi_old_oak") => {
+                self.fx("pickup", x, y);
+                self.say("The Old Outpost Oak grips the breach rim with roots thicker than siege timbers.");
+                Some(SessionEvent::None)
+            }
             _ => None,
         }
     }
