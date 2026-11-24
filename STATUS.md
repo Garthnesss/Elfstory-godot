@@ -396,3 +396,9 @@ and glTF inspection rather than assumed:
 - **Sister Wren (`wren`, Oakhaven `(19, 8)`) SHIPPED:** `fig_npc_wren_ds_s22.png` → `fig_npc_wren.glb` (2.8 MB, 40,000 tris, `--rebake --tex-size 2048 --cut-z 0.060`, `FIGURE_HEIGHT` 1.26). Round-2 `--rebake` + `--cut-z 0.060` restored intact right boot & cleared cream-robe streaks.
 - Fixed `tools/render_preview.py` camera framing (`dist = size * 1.38` + `to_track_quat`) so tall humanoid heads are no longer cropped in gate previews.
 - **Gate pack:** `docs/asset-gate/npcs-oakhaven-batch2-2026-11-24/README.md`. **Oakhaven NPC coverage is now 6/6.** Verified: `cargo test` 107/107, `godot_verify.sh godot` (`ALL GREEN`).
+
+## Town NPCs Highspire batch 1 — Lyra, Corvus, Kaelen SHIPPED (Nov 24, 2026)
+- **Archivist Lyra (`lyra`, Highspire `(14, 2)`) SHIPPED:** `fig_npc_lyra_ds_s22.png` → `fig_npc_lyra.glb` (2.6 MB, 42,000 tris, UV-preserving + WebP albedo lift `0.85/1.25`, `FIGURE_HEIGHT` 1.26; cleared Round-1 satchel/cape rebake smudge).
+- **Magistrate Corvus (`corvus`, Highspire `(5, 6)`) SHIPPED:** `fig_npc_corvus_ds_s22.png` → `fig_npc_corvus.glb` (1.8 MB, 37,999 tris, `--rebake --tex-size 2048 --cut-z 0.068` + albedo lift `0.85/1.25`, `FIGURE_HEIGHT` 1.30; Round-2 cut restored full right boot).
+- **Guildmaster Kaelen (`kaelen`, Highspire `(23, 6)`) SHIPPED:** `fig_npc_kaelen_ds_s22.png` → `fig_npc_kaelen.glb` (2.8 MB, 42,000 tris, UV-preserving `--cut-z 0.072` + WebP albedo lift `0.85/1.25`, `FIGURE_HEIGHT` 1.34; Round-2 restored both boots, clean armor/pouch/cape, bright steel/crimson values).
+- **Gate pack:** `docs/asset-gate/npcs-highspire-batch1-2026-11-24/README.md`. **Highspire NPC coverage is now 3/5.** Verified: `cargo test` 107/107, `godot_verify.sh godot` (`ALL GREEN`).
