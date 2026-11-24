@@ -935,10 +935,11 @@ func refresh_entities() -> void:
 
 	for npc_var: Variant in (zone.get("npcs", []) as Array):
 		var npc: Dictionary = npc_var as Dictionary
+		var nid := str(npc["id"])
 		var nname := str(npc["name"])
-		_sync_actor(seen, "npc:" + str(npc["id"]), Vector3(_as_float(npc["x"]), 0.0, _as_float(npc["y"])), -1,
+		_sync_actor(seen, "npc:" + nid, Vector3(_as_float(npc["x"]), 0.0, _as_float(npc["y"])), -1,
 			func() -> Node3D:
-				var n := make_actor(RIM_NPC, 1.0, "", Color(0.30, 0.85, 0.40))
+				var n := make_actor(RIM_NPC, 1.0, str(NPC_FIGURES.get(nid, "")), Color(0.30, 0.85, 0.40))
 				add_label(n, nname)
 				return n)
 
@@ -1022,9 +1023,10 @@ func _set_layer(n: Node, layer: int) -> void:
 const FIGURE_DIR := "res://assets/models/figures/"
 const PLAYER_FIGURES := {"Vanguard": "fig_vanguard"}
 const COMPANION_FIGURES := {"silverwind_lynx": "fig_lynx", "SilverwindLynx": "fig_lynx"}
+const NPC_FIGURES := {"torin": "fig_npc_torin", "mira": "fig_npc_mira", "vex": "fig_npc_vex"}
 const ENEMY_FIGURES := {"plague_rat": "fig_blight_rat", "crypt_skeleton": "fig_crypt_sentinel", "goblin_skirmisher": "fig_goblin", "bone_acolyte": "fig_bone_acolyte", "ash_cultist": "fig_ash_cultist", "grave_husk": "fig_grave_husk", "shadow_stalker": "fig_shadow_stalker", "blight_weaver": "fig_blight_weaver", "dread_wraith": "fig_dread_wraith", "rime_revenant": "fig_rime_revenant", "iron_golem": "fig_iron_golem", "cinder_wisp": "fig_cinder_wisp", "obsidian_warden": "fig_obsidian_warden", "spore_hulk": "fig_spore_hulk", "boss_bone_cantor": "fig_boss_bone_cantor", "boss_ashen_inquisitor": "fig_boss_ashen_inquisitor", "boss_malakor": "fig_boss_malakor"}
 ## Figure height in tiles (before the actor's scale factor).
-const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54, "fig_boss_bone_cantor": 1.38, "fig_boss_ashen_inquisitor": 1.42, "fig_boss_malakor": 1.48}
+const FIGURE_HEIGHT := {"fig_vanguard": 1.3, "fig_lynx": 0.85, "fig_npc_torin": 1.24, "fig_npc_mira": 1.26, "fig_npc_vex": 1.28, "fig_blight_rat": 0.78, "fig_crypt_sentinel": 1.4, "fig_goblin": 0.95, "fig_bone_acolyte": 1.35, "fig_ash_cultist": 1.35, "fig_grave_husk": 1.38, "fig_shadow_stalker": 1.35, "fig_blight_weaver": 1.38, "fig_dread_wraith": 1.35, "fig_rime_revenant": 1.40, "fig_iron_golem": 1.48, "fig_cinder_wisp": 1.32, "fig_obsidian_warden": 1.52, "fig_spore_hulk": 1.54, "fig_boss_bone_cantor": 1.38, "fig_boss_ashen_inquisitor": 1.42, "fig_boss_malakor": 1.48}
 const PLINTH_H := 0.09
 const RIM_PLAYER := Color(0.30, 0.55, 1.00)
 const RIM_COMPANION := Color(0.22, 0.86, 0.78)
