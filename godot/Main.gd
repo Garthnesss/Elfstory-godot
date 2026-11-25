@@ -141,16 +141,44 @@ var skills_box: VBoxContainer
 var aim_marker: MeshInstance3D
 var telegraph_root: Node3D
 var prompt_open := false
+var fog := FogOfWar.new()
+var fog_mats: Array[ShaderMaterial] = []
+# Terrain is resent only when it changes; the last copy lives here.
+var terrain_zone := ""
+var terrain_rev := -1
+var terrain_tiles: Array = []
+var terrain_used: Array = []
+var pack_screen: PackScreen
+var journal_screen: JournalScreen
+var pause_menu: PauseMenu
+var ending_screen: EndingScreen
+var hp_bar: ProgressBar
+var mp_bar: ProgressBar
+var xp_bar: ProgressBar
+var hp_text: Label
+var mp_text: Label
+var companion_bar: ProgressBar
+var companion_text: Label
+var auto_kind := "" # "", "explore" or "travel": walking on its own
+var auto_goal := Vector2i.ZERO
+var pad_move := Vector2i.ZERO
+var _last_hotbar := ""
+var _last_quests := ""
+var _telegraph_pool: Array[MeshInstance3D] = []
+var _shared_res := {} # meshes and materials every actor can share
+var _aabb_cache := {} # figure stem -> AABB
 const TitleScreen := preload("res://title_screen.gd")
 var title_screen: TitleScreen = null # full-screen title (title_screen.gd); null once a game is picked
 var active_slot := 1 # save slot (1-3) autosave writes to
 var save_dir_override := "" # dev: --elfstory-save-dir=<abs path>
 var saving_enabled := true # off in --elfstory-capture smoke runs
 var actions_since_save := 0
-const AUTOSAVE_EVERY := 25 # forwarded actions between autosaves # the dialogue panel is showing a world-tile prompt
+const AUTOSAVE_EVERY := 25 # forwarded actions between autosaves
 
 
 func _ready() -> void:
+	GameSettings.load_once()
+	get_window().min_size = Vector2i(1024, 600)
 	sun.rotation_degrees = Vector3(-26.0, -45.0, 0.0) # golden hour: low western sun
 
 	terrain_root = Node3D.new()
@@ -176,12 +204,13 @@ func _ready() -> void:
 	add_child(aim_marker)
 	for i: int in SFX_VOICES:
 		var ap := AudioStreamPlayer.new()
+		ap.bus = &"SFX"
 		add_child(ap)
 		sfx_players.append(ap)
 
-	build_ui()
-
 	session = ElfStorySession.new()
+	build_ui()
+	build_screens()
 	session.new_game("Garth", "Vanguard", 20261120)
 	var force_title := false
 	for arg: String in OS.get_cmdline_user_args():
@@ -225,6 +254,8 @@ func _maybe_smoke_capture() -> void:
 					refresh()
 				elif a == "--elfstory-unlit":
 					_apply_unlit_capture_mode()
+				elif a.begins_with("--elfstory-screen="):
+					_open_screen_for_capture(a.trim_prefix("--elfstory-screen="))
 			await get_tree().create_timer(2.0).timeout
 			await RenderingServer.frame_post_draw
 			var err := get_viewport().get_texture().get_image().save_png(path)
@@ -241,11 +272,12 @@ func _maybe_smoke_capture() -> void:
 ## when the zone or the town state changed (placements depend on both);
 ## entities and panels refresh every time.
 func refresh() -> void:
-	var parsed: Variant = JSON.parse_string(session.state_json())
-	if not (parsed is Dictionary):
-		push_warning("ElfStory: state_json() did not parse")
+	var parsed: Variant = JSON.parse_string(session.snapshot_json(terrain_zone, terrain_rev))
+	if not (parsed is Dictionary) or not (parsed as Dictionary).has("zone"):
+		push_warning("ElfStory: snapshot did not parse")
 		return
 	state = parsed as Dictionary
+	_restore_terrain(state["zone"] as Dictionary)
 
 	update_hud()
 	update_log()
@@ -254,6 +286,8 @@ func refresh() -> void:
 
 	var zone: Dictionary = state["zone"]
 	var zid := str(zone["id"])
+	# Out in the Vale the land is known ground; only who walks it is hidden.
+	fog.update(zone.get("sight", []) as Array, zid != current_zone_id, 0.72 if zid == "overworld" else 0.0)
 	# tileRev bumps when a tile changes in place (vault unsealed, chest
 	# looted, waystone attuned), so terrain rebuilds for those too.
 	var build_key := "%s|%s|%s" % [zid, JSON.stringify(state.get("town", {})), str(zone.get("tileRev", 0))]
@@ -261,6 +295,8 @@ func refresh() -> void:
 		current_zone_id = zid
 		current_build_key = build_key
 		rebuild_world()
+	elif fog.texture != null:
+		_bind_fog()
 	refresh_entities()
 	actions_since_save += 1
 	if actions_since_save >= AUTOSAVE_EVERY:
@@ -270,11 +306,36 @@ func refresh() -> void:
 	if skills_panel.visible:
 		rebuild_skills_panel()
 	play_fx()
+	if _as_bool(state.get("endingPending", false)) and title_screen == null and not ending_screen.visible:
+		auto_kind = ""
+		session.acknowledge_ending()
+		ending_screen.open()
+		autosave()
+
+
+## Put the cached terrain back into a snapshot that left it out, or cache new terrain.
+func _restore_terrain(zone: Dictionary) -> void:
+	if zone.has("tiles"):
+		terrain_zone = str(zone["id"])
+		terrain_rev = _as_int(zone.get("tileRev", 0))
+		terrain_tiles = zone["tiles"] as Array
+		terrain_used = zone.get("usedTiles", []) as Array
+	else:
+		zone["tiles"] = terrain_tiles
+		zone["usedTiles"] = terrain_used
+
+
+func _bind_fog() -> void:
+	var on := not _as_bool((state["zone"] as Dictionary).get("isTown", false))
+	for m: ShaderMaterial in fog_mats:
+		fog.bind(m, on)
 
 
 ## Bridge events are plain strings; panels are the only side effects here —
 ## the snapshot refresh that follows every action shows the consequences.
 func handle_event(ev: String) -> void:
+	if ev != "none":
+		auto_kind = "" # anything notable stops walking on its own
 	if ev.begins_with("zone_changed:") or ev == "player_died":
 		autosave()
 	if ev.begins_with("dialogue:"):
@@ -358,6 +419,9 @@ func apply_zone_mood(zone_id: String) -> void:
 	env.fog_density = _as_float(m[6], 0.001)
 	mood_floor = m[7]
 	mood_wall = m[8]
+	# Underground there is no sky to see past the edge of the known floor.
+	env.background_mode = Environment.BG_SKY if key == "surface" else Environment.BG_COLOR
+	env.background_color = (m[5] as Color).darkened(0.72)
 
 
 func rebuild_world() -> void:
@@ -366,6 +430,7 @@ func rebuild_world() -> void:
 	clear_children(terrain_root)
 	clear_children(landmarks_root)
 	cutaway_mat = null
+	fog_mats.clear()
 	forge_lights.clear() # the lights were children of landmarks_root (freed above)
 
 	var zone: Dictionary = state["zone"]
@@ -396,6 +461,7 @@ func rebuild_world() -> void:
 	grass_zone = GRASS_ZONES.has(zid)
 	var flat_items: Array = []
 	var tall_items: Array = []
+	var trees: Array[Vector2i] = []
 	for y: int in tiles.size():
 		var row: Array = tiles[y]
 		for x: int in row.size():
@@ -407,6 +473,11 @@ func rebuild_world() -> void:
 			if is_oakhaven and kind in ["tree", "market_stall", "torch", "pillar", "gate_city"]:
 				var base_kind := "road" if kind == "gate_city" else "floor"
 				flat_items.append({"x": x, "y": y, "kind": base_kind, "used": false})
+			elif kind == "tree":
+				flat_items.append({"x": x, "y": y, "kind": "floor", "used": false})
+				trees.append(Vector2i(x, y))
+			elif kind in ["chest", "brazier", "waystone"]:
+				flat_items.append({"x": x, "y": y, "kind": "floor", "used": false})
 			elif TALL_HEIGHTS.has(kind):
 				tall_items.append(item)
 			else:
@@ -419,6 +490,9 @@ func rebuild_world() -> void:
 	if tall_mm != null:
 		terrain_root.add_child(tall_mm)
 
+	for grove: MultiMeshInstance3D in WorldProps.trees(trees):
+		terrain_root.add_child(grove)
+		fog_mats.append(grove.material_override as ShaderMaterial)
 	var grass_skip := covered.duplicate()
 	if is_oakhaven:
 		for y: int in tiles.size():
@@ -443,6 +517,7 @@ func rebuild_world() -> void:
 		var grass := Grass.build(tiles, grass_skip)
 		if grass != null:
 			terrain_root.add_child(grass)
+			_collect_fog_mats(grass)
 	# Placements are the Oakhaven town-lot models; anywhere else they'd
 	# draw the town's buildings at their Oakhaven tile coordinates.
 	if is_oakhaven:
@@ -450,6 +525,87 @@ func rebuild_world() -> void:
 		var oak_scene := ResourceLoader.load("res://assets/models/oakhaven_oak.glb") as PackedScene
 		var plat_scene := ResourceLoader.load("res://assets/models/oakhaven_platypus.glb") as PackedScene
 		OakhavenDiorama.build(landmarks_root, tiles, oak_scene, plat_scene, forge_lights)
+	_build_story_props(zone)
+	_bind_fog()
+
+
+func _collect_fog_mats(n: Node) -> void:
+	if n is MultiMeshInstance3D and (n as MultiMeshInstance3D).material_override is ShaderMaterial:
+		fog_mats.append((n as MultiMeshInstance3D).material_override as ShaderMaterial)
+	for c: Node in n.get_children():
+		_collect_fog_mats(c)
+
+
+## Things worth walking to stand up from the floor and glow a little. Built once
+## per terrain change; hidden with the fog like everything else.
+const STORY_PROPS := {
+	"lore_tablet": [Color(0.55, 0.62, 0.72), Vector3(0.5, 0.9, 0.16), Color(0.45, 0.7, 1.0)],
+	"contraband_cache": [Color(0.36, 0.24, 0.14), Vector3(0.6, 0.42, 0.44), Color(1.0, 0.7, 0.25)],
+	"whispering_bell": [Color(0.72, 0.5, 0.2), Vector3(0.46, 0.6, 0.46), Color(1.0, 0.55, 0.2)],
+	"forgotten_forge": [Color(0.22, 0.2, 0.22), Vector3(0.72, 0.6, 0.5), Color(1.0, 0.42, 0.12)],
+	"cursed_altar": [Color(0.2, 0.12, 0.2), Vector3(0.8, 0.7, 0.5), Color(0.85, 0.15, 0.3)],
+}
+var story_props: Dictionary = {} # Vector2i -> Node3D
+
+
+func _build_story_props(zone: Dictionary) -> void:
+	story_props.clear()
+	var tiles: Array = zone["tiles"]
+	var used := {}
+	for u_var: Variant in (zone.get("usedTiles", []) as Array):
+		var u: Array = u_var as Array
+		used[Vector2i(_as_int(u[0]), _as_int(u[1]))] = true
+	for y: int in tiles.size():
+		var row: Array = tiles[y]
+		for x: int in row.size():
+			var kind := str(row[x])
+			if kind in ["chest", "brazier", "waystone"]:
+				var prop := WorldProps.make(kind, used.has(Vector2i(x, y)))
+				prop.position = Vector3(float(x), 0.0, float(y))
+				landmarks_root.add_child(prop)
+				story_props[Vector2i(x, y)] = prop
+				continue
+			if not STORY_PROPS.has(kind):
+				continue
+			var def: Array = STORY_PROPS[kind]
+			var spent := used.has(Vector2i(x, y)) and kind != "lore_tablet"
+			var node := Node3D.new()
+			node.position = Vector3(float(x), 0.0, float(y))
+			var size := def[1] as Vector3
+			var glow := def[2] as Color
+			var mi := MeshInstance3D.new()
+			var box := BoxMesh.new()
+			box.size = size
+			mi.mesh = box
+			mi.position.y = size.y * 0.5
+			var mat := StandardMaterial3D.new()
+			mat.albedo_color = (def[0] as Color).darkened(0.35 if spent else 0.0)
+			mat.roughness = 0.8
+			if not spent:
+				mat.emission_enabled = true
+				mat.emission = glow
+				mat.emission_energy_multiplier = 0.25
+			mi.material_override = mat
+			node.add_child(mi)
+			if not spent:
+				var light := OmniLight3D.new()
+				light.light_color = glow
+				light.light_energy = 0.9
+				light.omni_range = 2.6
+				light.position.y = size.y + 0.3
+				light.distance_fade_enabled = true
+				light.distance_fade_begin = 22.0
+				node.add_child(light)
+			landmarks_root.add_child(node)
+			story_props[Vector2i(x, y)] = node
+
+
+func _sight_at(x: int, y: int) -> int:
+	var rows: Array = (state["zone"] as Dictionary).get("sight", []) as Array
+	if y < 0 or y >= rows.size():
+		return 2
+	var row := str(rows[y])
+	return row.unicode_at(x) - 48 if x >= 0 and x < row.length() else 2
 
 
 func fetch_placements() -> Array:
@@ -518,6 +674,7 @@ func make_multimesh(items: Array, tall: bool, is_town: bool, zone_id: String = "
 		mat.set_shader_parameter("courses", 1.0)
 		mat.set_shader_parameter("cutaway", 1.0)
 		cutaway_mat = mat
+	fog_mats.append(mat)
 	mmi.material_override = mat
 	return mmi
 
@@ -588,6 +745,20 @@ func tile_color(kind: String, is_town: bool, zone_id: String = "", tx: int = 0, 
 			return Color(0.62, 0.46, 0.18)
 		"waystone":
 			return Color(0.30, 0.66, 0.85)
+		"trap", "dart_trap":
+			return Color(0.55, 0.22, 0.18)
+		"spore_pool":
+			return Color(0.30, 0.62, 0.26)
+		"frost_vent":
+			return Color(0.60, 0.80, 0.95)
+		"ember_crust":
+			return Color(0.72, 0.30, 0.10)
+		"shock_rune":
+			return Color(0.52, 0.36, 0.82)
+		"herb_node":
+			return Color(0.70, 0.82, 0.62)
+		"lore_tablet", "contraband_cache", "whispering_bell", "forgotten_forge", "cursed_altar":
+			return mood_floor as Color if mood_floor is Color else Color(0.40, 0.40, 0.42)
 		_:
 			return Color(0.50, 0.50, 0.50)
 
@@ -985,9 +1156,15 @@ func refresh_entities() -> void:
 		var e: Dictionary = e_var as Dictionary
 		var boss := _as_bool(e.get("isBoss", false))
 		var arch := str(e.get("archetype", ""))
-		_sync_actor(seen, "enemy:" + str(e["id"]), Vector3(_as_float(e["x"]), 0.0, _as_float(e["y"])), _as_int(e.get("hp", -1), -1),
-			func() -> Node3D: return make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
-				str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20), boss))
+		var e_pos := Vector3(_as_float(e["x"]), 0.0, _as_float(e["y"]))
+		var e_node := _sync_actor(seen, "enemy:" + str(e["id"]), e_pos, _as_int(e.get("hp", -1), -1),
+			func() -> Node3D:
+				var made := make_actor(RIM_BOSS if boss else RIM_ENEMY, 1.35 if boss else 1.0,
+					str(ENEMY_FIGURES.get(arch, "")), Color(0.90, 0.25, 0.20), boss)
+				add_health_bar(made)
+				return made)
+		_show_actor(e_node, _as_bool(e.get("visible", true), true), e_pos)
+		_set_health_bar(e_node, _as_int(e.get("hp", 1), 1), _as_int(e.get("maxHp", 1), 1), _as_bool(e.get("alerted", false)))
 
 	var npc_markers: Dictionary = state.get("npcMarkers", {}) as Dictionary
 	for npc_var: Variant in (zone.get("npcs", []) as Array):
@@ -1010,19 +1187,28 @@ func refresh_entities() -> void:
 				add_npc_labels(n, nid, nname)
 				return n)
 		_update_npc_badge_and_plinth(n_node, nid, nname, marker)
+		_show_actor(n_node, _as_bool(npc.get("visible", true), true), n_node.position)
 
 	for cr_var: Variant in (zone.get("critters", []) as Array):
 		var cr: Dictionary = cr_var as Dictionary
 		var crid := str(cr.get("id", "crit"))
 		var crx := _as_int(cr.get("x", 0))
 		var cry := _as_int(cr.get("y", 0))
-		_sync_actor(seen, "critter:" + crid, Vector3(float(crx), OakhavenDiorama.tile_elevation(zid, crx, cry), float(cry)), -1,
-			func() -> Node3D: return make_town_cat())
+		var cr_pos := Vector3(float(crx), OakhavenDiorama.tile_elevation(zid, crx, cry), float(cry))
+		var cr_cat := str(cr.get("kind", "")).contains("cat")
+		var cr_node := _sync_actor(seen, "critter:" + crid, cr_pos, -1,
+			func() -> Node3D: return make_town_cat() if cr_cat else make_small_critter(str(cr.get("kind", ""))))
+		_show_actor(cr_node, _as_bool(cr.get("visible", true), true), cr_pos)
 
 	for l_var: Variant in (zone.get("loot", []) as Array):
 		var l: Dictionary = l_var as Dictionary
-		_sync_actor(seen, "loot:%d,%d" % [_as_int(l["x"]), _as_int(l["y"])], Vector3(_as_float(l["x"]), 0.0, _as_float(l["y"])), -1,
+		var l_pos := Vector3(_as_float(l["x"]), 0.0, _as_float(l["y"]))
+		var l_node := _sync_actor(seen, "loot:%d,%d" % [_as_int(l["x"]), _as_int(l["y"])], l_pos, -1,
 			func() -> Node3D: return make_loot_box())
+		_show_actor(l_node, _as_bool(l.get("visible", true), true), l_pos)
+	for at_var: Variant in story_props:
+		var at: Vector2i = at_var as Vector2i
+		(story_props[at] as Node3D).visible = _sight_at(at.x, at.y) > 0
 
 	# Gone from the snapshot: enemies (and a collapsing companion) wait for
 	# their kill cue to pop; everything else just goes.
@@ -1043,6 +1229,40 @@ func refresh_entities() -> void:
 			dying[tk] = n
 		elif is_instance_valid(n):
 			n.queue_free()
+
+
+## Out of sight is out of the picture. Coming into sight snaps to the tile, so
+## nothing is seen sliding through a wall.
+func _show_actor(n: Node3D, on: bool, at: Vector3) -> void:
+	if on and not n.visible:
+		n.position = at
+	n.visible = on
+
+
+func add_health_bar(actor: Node3D) -> void:
+	var l := Label3D.new()
+	l.name = "Health"
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.no_depth_test = true
+	l.render_priority = 8
+	l.pixel_size = 0.005
+	l.font_size = 40
+	l.outline_size = 10
+	l.outline_modulate = Color(0.05, 0.03, 0.03, 0.9)
+	l.position = Vector3(0.0, 1.75, 0.0)
+	l.visible = false
+	actor.add_child(l)
+
+
+## Shown once a foe is hurt or hunting you; quiet otherwise.
+func _set_health_bar(actor: Node3D, hp: int, max_hp: int, alerted: bool) -> void:
+	var l := actor.get_node_or_null("Health") as Label3D
+	if l == null:
+		return
+	l.visible = alerted or hp < max_hp
+	if l.visible:
+		l.text = "%s %d" % [text_bar(hp, max_hp, 8), hp]
+		l.modulate = Color(0.95, 0.32, 0.26).lerp(Color(0.55, 0.9, 0.45), clampf(float(hp) / float(maxi(1, max_hp)), 0.0, 1.0))
 
 
 func _sync_actor(seen: Dictionary, key: String, target: Vector3, hp: int, make: Callable) -> Node3D:
@@ -1131,19 +1351,11 @@ func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Co
 
 	# Grounded contact shadow disc under every miniature plinth.
 	var shadow_disc := MeshInstance3D.new()
-	var scyl := CylinderMesh.new()
-	scyl.top_radius = 0.50 if is_boss else 0.42
-	scyl.bottom_radius = 0.50 if is_boss else 0.42
-	scyl.height = 0.01
-	scyl.radial_segments = 20
-	shadow_disc.mesh = scyl
+	var disc_r := 0.50 if is_boss else 0.42
+	shadow_disc.mesh = _shared_cylinder(disc_r, disc_r, 0.01, 20)
 	shadow_disc.position.y = 0.006
 	shadow_disc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var smat := StandardMaterial3D.new()
-	smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	smat.albedo_color = Color(0.03, 0.03, 0.04, 0.46)
-	shadow_disc.material_override = smat
+	shadow_disc.material_override = _shared_shadow_mat()
 	body.add_child(shadow_disc)
 
 	var plinth_h := PLINTH_H * 1.25 if is_boss else PLINTH_H
@@ -1183,17 +1395,9 @@ func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Co
 			ring_emit = 0.14
 
 	var plinth := MeshInstance3D.new()
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = top_rad
-	cyl.bottom_radius = bot_rad
-	cyl.height = plinth_h
-	cyl.radial_segments = plinth_segs
-	plinth.mesh = cyl
+	plinth.mesh = _shared_cylinder(top_rad, bot_rad, plinth_h, plinth_segs)
 	plinth.position.y = plinth_h * 0.5
-	var pm := StandardMaterial3D.new()
-	pm.albedo_color = plinth_col
-	pm.roughness = 0.45 if is_boss else 0.58
-	plinth.material_override = pm
+	plinth.material_override = _shared_plinth_mat(plinth_col, 0.45 if is_boss else 0.58)
 	body.add_child(plinth)
 
 	var ring := MeshInstance3D.new()
@@ -1234,7 +1438,9 @@ func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Co
 	var packed := figure_scene(stem)
 	if packed != null:
 		var fig: Node3D = packed.instantiate() as Node3D
-		var aabb := scene_aabb(fig)
+		if not _aabb_cache.has(stem):
+			_aabb_cache[stem] = scene_aabb(fig)
+		var aabb: AABB = _aabb_cache[stem]
 		if aabb.size.y > 0.001:
 			var s := _as_float(FIGURE_HEIGHT.get(stem, 1.0), 1.0) / aabb.size.y
 			fig.scale = Vector3.ONE * s
@@ -1265,6 +1471,38 @@ func make_actor(rim: Color, scale_factor: float, stem := "", capsule_color := Co
 	root.set_meta("flash", flash)
 	root.scale = Vector3.ONE * scale_factor
 	return root
+
+
+func _shared_cylinder(top: float, bottom: float, height: float, segments: int) -> CylinderMesh:
+	var key := "cyl %s %s %s %d" % [top, bottom, height, segments]
+	if not _shared_res.has(key):
+		var m := CylinderMesh.new()
+		m.top_radius = top
+		m.bottom_radius = bottom
+		m.height = height
+		m.radial_segments = segments
+		_shared_res[key] = m
+	return _shared_res[key] as CylinderMesh
+
+
+func _shared_shadow_mat() -> StandardMaterial3D:
+	if not _shared_res.has("shadow"):
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.albedo_color = Color(0.03, 0.03, 0.04, 0.46)
+		_shared_res["shadow"] = m
+	return _shared_res["shadow"] as StandardMaterial3D
+
+
+func _shared_plinth_mat(color: Color, roughness: float) -> StandardMaterial3D:
+	var key := "plinth %s %s" % [color, roughness]
+	if not _shared_res.has(key):
+		var m := StandardMaterial3D.new()
+		m.albedo_color = color
+		m.roughness = roughness
+		_shared_res[key] = m
+	return _shared_res[key] as StandardMaterial3D
 
 
 func _set_overlay(n: Node, mat: Material) -> void:
@@ -1397,6 +1635,25 @@ func _update_npc_badge_and_plinth(n: Node3D, _nid: String, _nname: String, marke
 			badge.visible = false
 
 
+## Wild critters: a small rounded body tinted by kind. Only towns have the cat.
+func make_small_critter(kind: String) -> Node3D:
+	var root := Node3D.new()
+	var mi := MeshInstance3D.new()
+	var body := SphereMesh.new()
+	body.radius = 0.13
+	body.height = 0.2
+	body.radial_segments = 12
+	body.rings = 6
+	mi.mesh = body
+	mi.position.y = 0.1
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color.from_hsv(float(kind.hash() % 60) / 360.0 + 0.05, 0.35, 0.5)
+	mat.roughness = 0.9
+	mi.material_override = mat
+	root.add_child(mi)
+	return root
+
+
 func make_town_cat() -> Node3D:
 	var root := Node3D.new()
 	var fur := Color(0.86, 0.56, 0.24)
@@ -1449,10 +1706,12 @@ func _process(delta: float) -> void:
 		if is_instance_valid(node):
 			var tgt: Vector3 = entity_targets[node] as Vector3
 			node.position = node.position.lerp(tgt, w)
+	fog.tick(delta)
 	_drain_cues(delta)
 	_animate_town_npcs(delta)
 	update_camera(delta)
 	update_held_movement(delta)
+	_step_auto(delta)
 
 
 func _animate_town_npcs(delta: float) -> void:
@@ -1518,6 +1777,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			cam_zoom = clampf(cam_zoom - 0.08, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			cam_zoom = clampf(cam_zoom + 0.08, CAM_ZOOM_MIN, CAM_ZOOM_MAX)
+		elif mb.button_index == MOUSE_BUTTON_LEFT and not modal_open():
+			_click_world(mb.position)
+		return
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		_pad_input(event)
 		return
 	if event is InputEventKey:
 		var k := event as InputEventKey
@@ -1526,6 +1790,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if title_screen != null:
 			return # Continue / New Game first
 		flush_cues() # never make the player wait on an animation
+		if auto_kind != "":
+			auto_kind = "" # any key stops walking on its own
+			if k.physical_keycode == KEY_X or k.physical_keycode == KEY_ESCAPE:
+				return
+		if k.physical_keycode == KEY_ESCAPE:
+			_back()
+			return
+		if screen_open():
+			_screen_key(k.physical_keycode)
+			return
 		match k.physical_keycode:
 			KEY_V:
 				chase_mode = not chase_mode
@@ -1538,22 +1812,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_BRACKETRIGHT:
 				cam_yaw -= PI * 0.5
 			KEY_F, KEY_ENTER, KEY_KP_ENTER:
-				if is_aiming():
-					do_session_action(func() -> String: return session.confirm_target())
-				else:
-					do_interact()
+				_act_or_confirm()
 			KEY_K:
-				toggle_skills_panel()
-			KEY_ESCAPE:
-				if is_aiming():
-					session.cancel_aim()
-					refresh()
-				elif skills_panel.visible:
-					skills_panel.hide()
+				if not (merchant_panel.visible or dialogue_panel.visible):
+					toggle_skills_panel()
 			_:
 				if merchant_panel.visible or dialogue_panel.visible or skills_panel.visible:
 					return # modal is up; don't act behind it
 				var code := k.physical_keycode
+				if _shortcut(code):
+					return
 				if code >= KEY_1 and code <= KEY_5:
 					var slot := int(code - KEY_1)
 					do_session_action(func() -> String: return session.trigger_hotbar(slot))
@@ -1574,6 +1842,213 @@ func _unhandled_input(event: InputEvent) -> void:
 					else:
 						do_move(d)
 						move_timer = MOVE_REPEAT
+
+
+func screen_open() -> bool:
+	return pack_screen.visible or journal_screen.visible or pause_menu.visible or ending_screen.visible
+
+
+func modal_open() -> bool:
+	return title_screen != null or screen_open() or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible
+
+
+func _act_or_confirm() -> void:
+	if is_aiming():
+		do_session_action(func() -> String: return session.confirm_target())
+	elif not (merchant_panel.visible or dialogue_panel.visible):
+		do_interact()
+
+
+## One "back" for Esc and the pad's B: close the top thing, else pause.
+func _back() -> void:
+	if pack_screen.visible:
+		pack_screen.hide()
+	elif journal_screen.visible:
+		journal_screen.hide()
+	elif ending_screen.visible:
+		ending_screen.hide()
+	elif pause_menu.visible:
+		GameSettings.save()
+		pause_menu.hide()
+	elif is_aiming():
+		session.cancel_aim()
+		refresh()
+	elif skills_panel.visible:
+		skills_panel.hide()
+	elif merchant_panel.visible:
+		merchant_panel.hide()
+	elif dialogue_panel.visible:
+		_on_dialogue_close()
+	else:
+		_open_pause()
+
+
+func _screen_key(code: Key) -> void:
+	if code == KEY_I and pack_screen.visible:
+		pack_screen.hide()
+	elif code == KEY_J and journal_screen.visible:
+		journal_screen.hide()
+
+
+func _shortcut(code: Key) -> bool:
+	match code:
+		KEY_I:
+			pack_screen.open()
+		KEY_J:
+			journal_screen.open()
+		KEY_H:
+			_pack_result(UiKit.parse(session.pack_action("quick_heal", "")))
+		KEY_R:
+			_pack_result(UiKit.parse(session.pack_action("rest", "")))
+		KEY_X:
+			auto_kind = "explore"
+		_:
+			return false
+	return true
+
+
+func _open_pause() -> void:
+	var f: Dictionary = state.get("player", {}) as Dictionary
+	pause_menu.open(not f.is_empty() and _as_bool(state.get("storyFinished", false)))
+
+
+## Say why a pack action failed; otherwise show what changed.
+func _pack_result(r: Dictionary) -> void:
+	if not UiKit.as_flag(r.get("ok")):
+		toast(str(r.get("msg", "")))
+		return
+	handle_event(str(r.get("event", "none")))
+	refresh()
+
+
+var _toast: Label
+var _toast_tween: Tween
+
+func toast(text: String) -> void:
+	if text == "":
+		return
+	_toast.text = text
+	_toast.modulate.a = 1.0
+	if _toast_tween != null:
+		_toast_tween.kill()
+	_toast_tween = create_tween()
+	_toast_tween.tween_interval(1.6)
+	_toast_tween.tween_property(_toast, "modulate:a", 0.0, 0.5)
+
+
+## Walk to a clicked tile (or strike / step if it is next to you).
+func _click_world(at: Vector2) -> void:
+	var from := camera.project_ray_origin(at)
+	var dir := camera.project_ray_normal(at)
+	if absf(dir.y) < 0.001:
+		return
+	var hit := from + dir * (-from.y / dir.y)
+	var goal := Vector2i(roundi(hit.x), roundi(hit.z))
+	var pl: Dictionary = state["player"]
+	var d := goal - Vector2i(_as_int(pl["x"]), _as_int(pl["y"]))
+	flush_cues()
+	if is_aiming():
+		var aim: Variant = state.get("aimedTarget")
+		var cur := Vector2i(_as_int(pl["x"]), _as_int(pl["y"]))
+		if aim is Dictionary:
+			cur = Vector2i(_as_int((aim as Dictionary)["x"]), _as_int((aim as Dictionary)["y"]))
+		if goal == cur:
+			_act_or_confirm()
+		else:
+			session.move_aim(goal.x - cur.x, goal.y - cur.y)
+			refresh()
+		return
+	if d == Vector2i.ZERO:
+		do_interact()
+	elif maxi(absi(d.x), absi(d.y)) == 1:
+		var before: Dictionary = pl
+		handle_event(session.move_player(d.x, d.y))
+		refresh()
+		var after: Dictionary = state["player"]
+		if before["x"] != after["x"] or before["y"] != after["y"]:
+			play_step()
+		elif actor_at(goal.x, goal.y) != null:
+			do_interact() # an NPC in the way: talk to them
+	else:
+		auto_goal = goal
+		auto_kind = "travel"
+
+
+func _step_auto(_delta: float) -> void:
+	if auto_kind == "" or move_timer > 0.0:
+		return
+	if modal_open() or is_aiming():
+		auto_kind = ""
+		return
+	move_timer = MOVE_REPEAT * 0.7
+	flush_cues()
+	var explore := auto_kind == "explore"
+	var r := UiKit.parse(session.auto_explore_step() if explore else session.travel_step(auto_goal.x, auto_goal.y))
+	if not UiKit.as_flag(r.get("ok")):
+		auto_kind = ""
+		if str(r.get("msg")) != "Arrived.":
+			toast(str(r.get("msg", "")))
+		return
+	var keep := auto_kind
+	handle_event(str(r.get("event", "none")))
+	if auto_kind != "":
+		auto_kind = keep
+	refresh()
+	play_step()
+
+
+func _pad_input(event: InputEvent) -> void:
+	if title_screen != null:
+		return
+	var jm := event as InputEventJoypadMotion
+	if jm != null:
+		if jm.axis == JOY_AXIS_LEFT_X:
+			pad_move.x = signi(int(jm.axis_value * 1.8))
+		elif jm.axis == JOY_AXIS_LEFT_Y:
+			pad_move.y = -signi(int(jm.axis_value * 1.8))
+		return
+	var jb := event as InputEventJoypadButton
+	match jb.button_index:
+		JOY_BUTTON_DPAD_LEFT:
+			pad_move.x = -1 if jb.pressed else 0
+		JOY_BUTTON_DPAD_RIGHT:
+			pad_move.x = 1 if jb.pressed else 0
+		JOY_BUTTON_DPAD_UP:
+			pad_move.y = 1 if jb.pressed else 0
+		JOY_BUTTON_DPAD_DOWN:
+			pad_move.y = -1 if jb.pressed else 0
+	if not jb.pressed:
+		return
+	flush_cues()
+	auto_kind = ""
+	if jb.button_index == JOY_BUTTON_B:
+		_back()
+		return
+	if jb.button_index == JOY_BUTTON_START:
+		if modal_open():
+			_back()
+		else:
+			_open_pause()
+		return
+	if modal_open():
+		return # the focused button takes A / D-pad by itself
+	match jb.button_index:
+		JOY_BUTTON_A:
+			_act_or_confirm()
+		JOY_BUTTON_X:
+			pack_screen.open()
+		JOY_BUTTON_Y:
+			_shortcut(KEY_H)
+		JOY_BUTTON_BACK:
+			journal_screen.open()
+		JOY_BUTTON_LEFT_SHOULDER:
+			cam_yaw += PI * 0.5
+		JOY_BUTTON_RIGHT_SHOULDER:
+			cam_yaw -= PI * 0.5
+		JOY_BUTTON_LEFT_STICK:
+			_shortcut(KEY_X)
+		JOY_BUTTON_RIGHT_STICK:
+			chase_mode = not chase_mode
 
 
 ## Screen-space step for a key: (x = right, y = away from camera).
@@ -1601,9 +2076,9 @@ func key_dir(k: int) -> Vector2i:
 ## Held-key walking: poll the same key set every MOVE_REPEAT seconds.
 func update_held_movement(delta: float) -> void:
 	move_timer -= delta
-	if move_timer > 0.0 or title_screen != null or merchant_panel.visible or dialogue_panel.visible or skills_panel.visible or is_aiming():
+	if move_timer > 0.0 or modal_open() or is_aiming():
 		return
-	var held := Vector2i.ZERO
+	var held := pad_move
 	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
 		held.y += 1
 	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
@@ -1623,6 +2098,7 @@ func update_held_movement(delta: float) -> void:
 	held.x = clampi(held.x, -1, 1)
 	held.y = clampi(held.y, -1, 1)
 	if held != Vector2i.ZERO:
+		auto_kind = ""
 		flush_cues()
 		do_move(held)
 		move_timer = MOVE_REPEAT
@@ -1647,7 +2123,18 @@ func build_ui() -> void:
 	hud_title.add_theme_font_size_override("font_size", 18)
 	hud_title.add_theme_color_override("font_color", UI_GOLD)
 	hud_box.add_child(hud_title)
+	hud_box.custom_minimum_size.x = 280
+	hp_bar = _make_bar(Color(0.80, 0.22, 0.20))
+	hp_text = _bar_row(hud_box, hp_bar)
+	mp_bar = _make_bar(Color(0.28, 0.46, 0.88))
+	mp_text = _bar_row(hud_box, mp_bar)
+	xp_bar = _make_bar(Color(0.86, 0.68, 0.26))
+	xp_bar.custom_minimum_size.y = 6
+	hud_box.add_child(xp_bar)
+	companion_bar = _make_bar(Color(0.22, 0.72, 0.66))
+	companion_text = _bar_row(hud_box, companion_bar)
 	hud_body = make_label()
+	hud_body.add_theme_font_size_override("font_size", 13)
 	hud_box.add_child(hud_body)
 
 	# Log, bottom-left: the last 8 lines from the snapshot.
@@ -1763,10 +2250,10 @@ func build_ui() -> void:
 	merchant_panel.anchor_right = 0.5
 	merchant_panel.anchor_top = 0.5
 	merchant_panel.anchor_bottom = 0.5
-	merchant_panel.offset_left = -250
-	merchant_panel.offset_right = 250
-	merchant_panel.offset_top = -210
-	merchant_panel.offset_bottom = 230
+	merchant_panel.offset_left = -300
+	merchant_panel.offset_right = 300
+	merchant_panel.offset_top = -260
+	merchant_panel.offset_bottom = 270
 	layer.add_child(merchant_panel)
 	var mer_box := VBoxContainer.new()
 	merchant_panel.add_child(mer_box)
@@ -1774,12 +2261,88 @@ func build_ui() -> void:
 	merchant_title.add_theme_font_size_override("font_size", 18)
 	merchant_title.add_theme_color_override("font_color", UI_GOLD)
 	mer_box.add_child(merchant_title)
+	var mer_scroll := UiKit.scroll()
+	mer_scroll.custom_minimum_size = Vector2(560, 430)
+	mer_box.add_child(mer_scroll)
 	merchant_rows = VBoxContainer.new()
-	mer_box.add_child(merchant_rows)
+	merchant_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mer_scroll.add_child(merchant_rows)
 	var mer_close := make_button("Close")
 	mer_close.pressed.connect(func() -> void: merchant_panel.hide())
 	mer_box.add_child(mer_close)
 	merchant_panel.hide()
+
+
+func build_screens() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "Screens"
+	layer.layer = 5
+	add_child(layer)
+	_toast = make_label()
+	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast.offset_top = 96
+	_toast.add_theme_font_size_override("font_size", 19)
+	_toast.add_theme_color_override("font_outline_color", Color(0.06, 0.04, 0.02))
+	_toast.add_theme_constant_override("outline_size", 8)
+	_toast.modulate.a = 0.0
+	layer.add_child(_toast)
+	pack_screen = PackScreen.new()
+	layer.add_child(pack_screen)
+	pack_screen.setup(session, ui_theme(), make_panel())
+	pack_screen.acted.connect(_on_pack_acted)
+	journal_screen = JournalScreen.new()
+	layer.add_child(journal_screen)
+	journal_screen.setup(session, ui_theme(), make_panel())
+	ending_screen = EndingScreen.new()
+	layer.add_child(ending_screen)
+	ending_screen.setup(session, ui_theme(), make_panel())
+	ending_screen.ascend.connect(_on_ascend)
+	pause_menu = PauseMenu.new()
+	layer.add_child(pause_menu)
+	pause_menu.setup(ui_theme(), make_panel())
+	pause_menu.save_requested.connect(func() -> void:
+		autosave()
+		pause_menu.note("Saved."))
+	pause_menu.title_requested.connect(_on_quit_to_title)
+	pause_menu.ending_requested.connect(func() -> void: ending_screen.open())
+
+
+func _on_pack_acted(r: Dictionary) -> void:
+	if UiKit.as_flag(r.get("ok")):
+		var ev := str(r.get("event", "none"))
+		if ev != "none":
+			pack_screen.hide() # something happened in the world: show it
+		handle_event(ev)
+		refresh()
+
+
+func _on_ascend() -> void:
+	if session.ascend():
+		reset_view()
+		autosave()
+		toast("A new cycle begins.")
+
+
+func _on_quit_to_title() -> void:
+	autosave()
+	show_title()
+
+
+func _open_screen_for_capture(which: String) -> void:
+	match which:
+		"pack":
+			pack_screen.open()
+		"journal":
+			journal_screen.open()
+		"pause":
+			_open_pause()
+		"ending":
+			if session.has_method("debug_finish_story"):
+				session.debug_finish_story()
+			ending_screen.open()
+		"shop":
+			open_merchant("torin")
 
 
 # Storybook UI skin: walnut-timber panels with a brass edge, cream
@@ -1831,7 +2394,7 @@ func make_panel() -> PanelContainer:
 	var p := PanelContainer.new()
 	p.theme = ui_theme()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.13, 0.085, 0.05, 0.9)
+	sb.bg_color = Color(0.13, 0.085, 0.05, 0.97)
 	sb.border_color = UI_BRASS
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(9)
@@ -1867,30 +2430,73 @@ func update_hud() -> void:
 	var max_mp := _as_int(derived.get("maxMana", pl.get("maxMana", 0)))
 	var cur_hp := _as_int(pl["hp"])
 	var cur_mp := _as_int(pl["mana"])
-	hud_body.text = "HP %s %d/%d\nMP %s %d/%d\nLv %d · %d g · ATK %d · DEF %d" % [
-		text_bar(cur_hp, max_hp), cur_hp, max_hp,
-		text_bar(cur_mp, max_mp), cur_mp, max_mp,
-		_as_int(pl["level"]), _as_int(pl["gold"]),
-		_as_int(derived.get("atk", 0)), _as_int(derived.get("def", 0)),
-	]
+	_fill(hp_bar, hp_text, "HP", cur_hp, max_hp)
+	_fill(mp_bar, mp_text, "MP", cur_mp, max_mp)
+	xp_bar.max_value = maxi(1, _as_int(pl.get("xpToNext", 1), 1))
+	xp_bar.value = _as_int(pl.get("xp", 0))
+	var lines: PackedStringArray = ["Lv %d   %d gold   ATK %d   DEF %d" % [
+		_as_int(pl["level"]), _as_int(pl["gold"]), _as_int(derived.get("atk", 0)), _as_int(derived.get("def", 0))]]
+	var cycle := _as_int(state.get("cycle", 0))
+	if cycle > 0:
+		lines[0] += "   Cycle %d" % cycle
 	var sts: PackedStringArray = []
 	for st_var: Variant in (pl.get("statuses", []) as Array):
 		var st: Dictionary = st_var as Dictionary
 		sts.append("%s %dt" % [str(st["kind"]).capitalize(), _as_int(st["turns"])])
 	if not sts.is_empty():
-		hud_body.text += "\n" + " · ".join(sts)
+		lines.append(", ".join(sts))
 	var comp_var: Variant = pl.get("companion")
-	if comp_var is Dictionary:
+	var has_comp := comp_var is Dictionary
+	companion_bar.get_parent().set("visible", has_comp)
+	if has_comp:
 		var comp: Dictionary = comp_var as Dictionary
-		var cname := str(comp.get("name", "Companion"))
 		var cd := _as_int(comp.get("respawnCooldown", 0))
+		_fill(companion_bar, companion_text, str(comp.get("name", "Companion")), _as_int(comp.get("hp", 0)), _as_int(comp.get("maxHp", 1), 1))
 		if cd > 0:
-			hud_body.text += "\n%s: reforming (%dt)" % [cname, cd]
-		else:
-			hud_body.text += "\n%s %d/%d HP" % [cname, _as_int(comp.get("hp", 0)), _as_int(comp.get("maxHp", 0))]
-	var sp := _as_int(pl.get("skillPoints", 0))
-	if sp > 0:
-		hud_body.text += "\n%d skill point(s) — press K" % sp
+			companion_text.text = "%s reforms in %d" % [str(comp.get("name", "Companion")), cd]
+	var points: PackedStringArray = []
+	if _as_int(pl.get("skillPoints", 0)) > 0:
+		points.append("%d skill (K)" % _as_int(pl.get("skillPoints", 0)))
+	if _as_int(pl.get("attributePoints", 0)) > 0:
+		points.append("%d attribute (I)" % _as_int(pl.get("attributePoints", 0)))
+	if not points.is_empty():
+		lines.append("Points to spend: " + ", ".join(points))
+	hud_body.text = "\n".join(lines)
+
+
+func _make_bar(color: Color) -> ProgressBar:
+	var b := ProgressBar.new()
+	b.show_percentage = false
+	b.custom_minimum_size = Vector2(0, 19)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var back := StyleBoxFlat.new()
+	back.bg_color = Color(0.05, 0.035, 0.025, 0.95)
+	back.set_corner_radius_all(4)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = color
+	fill.set_corner_radius_all(4)
+	b.add_theme_stylebox_override("background", back)
+	b.add_theme_stylebox_override("fill", fill)
+	return b
+
+
+func _bar_row(parent: Control, bar: ProgressBar) -> Label:
+	var holder := MarginContainer.new()
+	parent.add_child(holder)
+	holder.add_child(bar)
+	var l := make_label()
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_outline_color", Color(0.05, 0.03, 0.02))
+	l.add_theme_constant_override("outline_size", 4)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	holder.add_child(l)
+	return l
+
+
+func _fill(bar: ProgressBar, text: Label, label_text: String, cur: int, maxv: int) -> void:
+	bar.max_value = maxi(1, maxv)
+	bar.value = cur
+	text.text = "%s  %d / %d" % [label_text, cur, maxv]
 
 
 func text_bar(cur: int, maxv: int, width: int = 14) -> String:
@@ -1908,10 +2514,10 @@ func update_log() -> void:
 
 
 func rebuild_town_panel() -> void:
-	clear_children(town_box)
 	if not ENABLE_TOWN_REBUILD_UI:
 		town_panel.hide()
 		return
+	clear_children(town_box)
 	var zone: Dictionary = state["zone"]
 	if not _as_bool(zone.get("isTown", false)):
 		town_panel.hide()
@@ -2058,6 +2664,10 @@ func rebuild_town_panel() -> void:
 
 
 func rebuild_quest_tracker() -> void:
+	var sig := JSON.stringify(state.get("questTracker", []))
+	if sig == _last_quests and not ENABLE_TOWN_REBUILD_UI:
+		return
+	_last_quests = sig
 	clear_children(quest_box)
 	if ENABLE_TOWN_REBUILD_UI and _as_bool((state.get("zone", {}) as Dictionary).get("isTown", false)):
 		quest_panel.hide()
@@ -2153,6 +2763,7 @@ func render_dialogue() -> void:
 		b.pressed.connect(_on_dialogue_choice.bind(str(choice.get("id", ""))))
 		dialogue_choices.add_child(b)
 	dialogue_panel.show()
+	UiKit.focus_first(dialogue_choices)
 
 
 func _on_dialogue_choice(choice_id: String) -> void:
@@ -2198,6 +2809,7 @@ func render_prompt() -> void:
 		b.pressed.connect(_on_prompt_choice.bind(str(opt.get("id", ""))))
 		dialogue_choices.add_child(b)
 	dialogue_panel.show()
+	UiKit.focus_first(dialogue_choices)
 
 
 func _on_prompt_choice(option_id: String) -> void:
@@ -2211,31 +2823,75 @@ func _on_prompt_choice(option_id: String) -> void:
 
 func open_merchant(merchant_id: String) -> void:
 	current_merchant_id = merchant_id
-	merchant_title.text = "Merchant — " + merchant_id
+	merchant_title.text = merchant_id.capitalize() + "'s wares"
 	rebuild_merchant_rows()
 	merchant_panel.show()
+	UiKit.focus_first(merchant_rows)
 
 
 func rebuild_merchant_rows() -> void:
 	clear_children(merchant_rows)
+	var gold := _as_int((state.get("player", {}) as Dictionary).get("gold", 0))
+	_merchant_heading("For sale   (you have %d gold)" % gold)
 	var parsed: Variant = JSON.parse_string(session.merchant_stock_json(current_merchant_id))
-	if not (parsed is Array):
-		var none := make_label()
-		none.text = "(no stock)"
-		merchant_rows.add_child(none)
-		return
-	var stock: Array = parsed as Array
+	var stock: Array = parsed as Array if parsed is Array else []
+	if stock.is_empty():
+		_merchant_heading("Sold out.", 14)
 	for i: int in stock.size():
 		var item: Dictionary = stock[i] as Dictionary
-		var row := HBoxContainer.new()
-		var l := make_label()
-		l.text = "%s (%s) — %d g" % [str(item.get("name", "?")), str(item.get("rarity", "")), _as_int(item.get("value", 0))]
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(l)
-		var b := make_button("Buy")
-		b.pressed.connect(_on_buy_item.bind(i))
-		row.add_child(b)
-		merchant_rows.add_child(row)
+		var qty := _as_int(item.get("quantity", 1), 1)
+		var price := _as_int(item.get("value", 0))
+		_merchant_row("%s%s (%s)" % [str(item.get("name", "?")), " ×%d" % qty if qty > 1 else "", str(item.get("rarity", ""))],
+			str(item.get("description", "")), "Buy  %dg" % price, price <= gold, _on_buy_item.bind(i))
+	var pack := UiKit.parse(session.pack_json())
+	var forge := current_merchant_id in ["torin", "blacksmith", "halda"]
+	if forge:
+		_merchant_heading("Temper gear")
+		for e_v: Variant in UiKit.as_list(pack.get("equipped")):
+			_temper_row(UiKit.as_dict(UiKit.as_dict(e_v).get("item")), gold)
+		for i_v: Variant in UiKit.as_list(pack.get("items")):
+			_temper_row(UiKit.as_dict(i_v), gold)
+	_merchant_heading("Sell")
+	for i_v: Variant in UiKit.as_list(pack.get("items")):
+		var it := UiKit.as_dict(i_v)
+		if str(it["category"]) == "quest":
+			continue
+		var q := _as_int(it["quantity"], 1)
+		_merchant_row("%s%s" % [str(it["name"]), " ×%d" % q if q > 1 else ""], str(it["description"]),
+			"Sell  +%dg" % _as_int(it["sell"]), true, _merchant_act.bind("sell", str(it["id"])))
+
+
+func _temper_row(it: Dictionary, gold: int) -> void:
+	if it.is_empty() or it.get("temperCost") == null:
+		return
+	var cost := _as_int(it["temperCost"])
+	_merchant_row(str(it["name"]) + ("  (worn)" if UiKit.as_flag(it["worn"]) else ""), "Raises every stat it has. Up to +3.",
+		"Temper  %dg" % cost, cost <= gold, _merchant_act.bind("temper", str(it["id"])))
+
+
+func _merchant_heading(text: String, size := 16) -> void:
+	merchant_rows.add_child(UiKit.label(text, size, UI_GOLD if size >= 16 else UI_INK))
+
+
+func _merchant_row(text: String, tip: String, action: String, enabled: bool, pressed: Callable) -> void:
+	var row := HBoxContainer.new()
+	var l := make_label()
+	l.text = text
+	l.tooltip_text = tip
+	l.mouse_filter = Control.MOUSE_FILTER_PASS
+	l.clip_text = true
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(l)
+	var b := make_button(action)
+	b.disabled = not enabled
+	b.pressed.connect(pressed)
+	row.add_child(b)
+	merchant_rows.add_child(row)
+
+
+func _merchant_act(action: String, id: String) -> void:
+	_pack_result(UiKit.parse(session.pack_action(action, id)))
+	rebuild_merchant_rows()
 
 
 func _on_buy_item(index: int) -> void:
@@ -2280,7 +2936,7 @@ func join_strs(arr: Array) -> String:
 func clear_children(node: Node) -> void:
 	for child: Node in node.get_children():
 		node.remove_child(child)
-		child.free()
+		child.queue_free() # may run inside this child's own signal
 
 
 func _flicker_forge(delta: float) -> void:
@@ -2444,6 +3100,8 @@ func _play_cue(cue: Dictionary) -> void:
 			spawn_sparkle(at, 1.0)
 		"level_up":
 			spawn_sparkle(at, 1.6)
+		"heal", "mana":
+			spawn_sparkle(at, 1.2)
 		"town_build":
 			spawn_vfx(VFX_HIT, at + Vector3(0.0, 0.5, 0.0), 2.4)
 			spawn_sparkle(at, 2.0)
@@ -2535,6 +3193,10 @@ func do_session_action(call: Callable) -> void:
 
 
 func update_hotbar() -> void:
+	var sig := "%s%s" % [JSON.stringify(state.get("hotbar", [])), state.get("armedSkill")]
+	if sig == _last_hotbar:
+		return
+	_last_hotbar = sig
 	clear_children(hotbar_box)
 	var armed: Variant = state.get("armedSkill")
 	var slots: Array = state.get("hotbar", []) as Array
@@ -2571,19 +3233,28 @@ func update_combat_overlays() -> void:
 	if aim_marker.visible:
 		var aim: Dictionary = aim_var as Dictionary
 		aim_marker.position = Vector3(_as_float(aim["x"]), 0.04, _as_float(aim["y"]))
-	clear_children(telegraph_root)
+	var used_marks := 0
 	var zone: Dictionary = state["zone"]
 	for e_var: Variant in (zone.get("enemies", []) as Array):
 		var e: Dictionary = e_var as Dictionary
+		if not _as_bool(e.get("visible", true), true):
+			continue
 		var intent_var: Variant = e.get("intent")
 		if not (intent_var is Dictionary):
 			continue
 		var intent: Dictionary = intent_var as Dictionary
 		for t_var: Variant in (intent.get("targetTiles", []) as Array):
 			var t: Dictionary = t_var as Dictionary
-			var m := make_tile_marker(Color(0.95, 0.15, 0.1, 0.45), 0.03)
+			if used_marks == _telegraph_pool.size():
+				var made := make_tile_marker(Color(0.95, 0.15, 0.1, 0.45), 0.03)
+				telegraph_root.add_child(made)
+				_telegraph_pool.append(made)
+			var m := _telegraph_pool[used_marks]
+			used_marks += 1
 			m.position = Vector3(_as_float(t["x"]), 0.02, _as_float(t["y"]))
-			telegraph_root.add_child(m)
+			m.show()
+	for i: int in range(used_marks, _telegraph_pool.size()):
+		_telegraph_pool[i].hide()
 
 
 func make_tile_marker(color: Color, height: float) -> MeshInstance3D:
@@ -2712,6 +3383,11 @@ func _on_title_continue(slot: int) -> void:
 func reset_view() -> void:
 	current_zone_id = ""
 	current_build_key = ""
+	terrain_zone = ""
+	terrain_rev = -1
+	auto_kind = ""
+	_last_hotbar = ""
+	_last_quests = ""
 	camera_snapped = false
 	actions_since_save = 0
 	refresh()

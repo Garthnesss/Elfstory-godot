@@ -17,6 +17,16 @@ uniform vec3 cam_pos = vec3(0.0, 30.0, 14.0); // real camera, also used in the s
 uniform float cut_radius = 1.8;
 uniform vec4 cap_tint : source_color = vec4(0.16, 0.15, 0.19, 1.0);
 
+uniform float fog_on = 0.0;
+uniform sampler2D fog_tex : filter_linear, repeat_disable;
+uniform sampler2D fog_exact : filter_nearest, repeat_disable;
+uniform vec2 fog_size = vec2(1.0);
+
+// 1 = in sight, 0.45 = remembered, 0 = never seen. One texel per tile.
+float seen_at(vec2 world_xz) {
+	return mix(1.0, texture(fog_tex, (world_xz + 0.5) / fog_size).r, fog_on);
+}
+
 varying vec3 local_pos;
 varying vec3 local_nrm;
 varying vec3 world_pos;
@@ -123,6 +133,13 @@ void fragment() {
 		base = cap_tint.rgb * mix(0.75, 1.2, m2) * mix(0.9, 1.05, mott);
 	}
 
+	// A whole block is either known or not (no ragged half-walls); only the
+	// shading blends softly toward the edge of sight.
+	if (fog_on > 0.5 && texture(fog_exact, (tile_origin.xz + 0.5) / fog_size).r < 0.02) {
+		discard;
+	}
+	float seen = max(seen_at(mix(tile_origin.xz, world_pos.xz, 0.5)), 0.22 * fog_on);
+	base = mix(vec3(dot(base, vec3(0.3, 0.59, 0.11))) * vec3(0.42, 0.45, 0.58), base, smoothstep(0.40, 0.95, seen)) * smoothstep(0.0, 0.4, seen);
 	ALBEDO = base;
 	ROUGHNESS = 0.92;
 	SPECULAR = 0.25;

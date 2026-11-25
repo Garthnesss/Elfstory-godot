@@ -15,13 +15,25 @@ uniform float tint_only : hint_range(0.0, 1.0) = 0.0;
 uniform float wind_strength = 0.07;
 uniform float wind_speed = 1.3;
 
+uniform float fog_on = 0.0;
+uniform sampler2D fog_tex : filter_linear, repeat_disable;
+uniform vec2 fog_size = vec2(1.0);
+
+// 1 = in sight, 0.45 = remembered, 0 = never seen. One texel per tile.
+float seen_at(vec2 world_xz) {
+	return mix(1.0, texture(fog_tex, (world_xz + 0.5) / fog_size).r, fog_on);
+}
+
 varying float blade_h;
+varying float seen;
 varying vec3 tint;
 
 void vertex() {
 	blade_h = UV.y;
 	tint = COLOR.rgb;
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	seen = seen_at(wp.xz);
+	VERTEX *= step(0.2, seen); // unseen meadow is not drawn
 	float t = TIME * wind_speed;
 	// Slow rolling gusts across the field plus a faster per-blade flutter.
 	float gust = sin(wp.x * 0.35 + wp.z * 0.2 + t) * 0.5 + 0.5;
@@ -34,7 +46,8 @@ void vertex() {
 
 void fragment() {
 	vec3 ramp = mix(base_color.rgb, tip_color.rgb, smoothstep(0.0, 1.0, blade_h));
-	ALBEDO = mix(ramp * tint, tint, tint_only);
+	vec3 lit = mix(ramp * tint, tint, tint_only);
+	ALBEDO = mix(vec3(dot(lit, vec3(0.3, 0.59, 0.11))) * vec3(0.42, 0.45, 0.58), lit, smoothstep(0.40, 0.95, seen));
 	ROUGHNESS = 0.9;
 	SPECULAR = 0.15;
 	// Low sun through the blade tips (golden hour).

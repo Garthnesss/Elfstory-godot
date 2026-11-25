@@ -51,7 +51,7 @@ func flash(n: Node3D, color := Color.WHITE) -> void:
 	if body == null:
 		return
 	var fm: StandardMaterial3D = n.get_meta("flash", null)
-	if fm != null:
+	if fm != null and GameSettings.flashes:
 		fm.albedo_color = Color(color, 0.85)
 		var tf := _track(n.create_tween())
 		tf.tween_property(fm, "albedo_color:a", 0.0, FLASH_TIME)
@@ -101,6 +101,8 @@ func number(parent: Node3D, at: Vector3, text: String, color: Color, big := fals
 
 ## Brief slow-motion on crits, kills and hits taken — never on routine hits.
 func hit_stop(duration: float) -> void:
+	if not GameSettings.hit_stop:
+		return
 	_stops += 1
 	Engine.time_scale = 0.08
 	get_tree().create_timer(duration, true, false, true).timeout.connect(func() -> void:
@@ -118,7 +120,7 @@ func add_trauma(amount: float) -> void:
 func shake_offset(delta: float) -> Vector2:
 	trauma = maxf(0.0, trauma - delta * 1.8)
 	_shake_t += delta
-	var s := trauma * trauma * 0.4
+	var s := trauma * trauma * 0.4 * GameSettings.shake
 	return Vector2(
 		s * (sin(_shake_t * 47.0) * 0.6 + sin(_shake_t * 29.0 + 1.3) * 0.4),
 		s * (sin(_shake_t * 53.0 + 2.1) * 0.6 + sin(_shake_t * 31.0) * 0.4))

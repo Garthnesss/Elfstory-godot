@@ -59,7 +59,8 @@ light_color = Color(1, 0.78, 0.56, 1)
 light_energy = 1.9
 shadow_blur = 1.4
 shadow_enabled = true
-directional_shadow_max_distance = 140.0
+directional_shadow_mode = 1
+directional_shadow_max_distance = 48.0
 
 [node name="CameraRig" type="Node3D" parent="."]
 

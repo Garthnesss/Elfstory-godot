@@ -1920,6 +1920,7 @@ impl GameSession {
                     "name": c.name,
                     "x": c.x,
                     "y": c.y,
+                    "visible": seen(c.x, c.y, true),
                 })
             })
             .collect();
@@ -1969,6 +1970,7 @@ impl GameSession {
             "npcMarkers": self.npc_markers_json(),
             "carriedTownTags": self.carried_town_tags(),
             "endingPending": self.ending_pending(),
+            "storyFinished": self.flags.malakor_defeated == Some(true),
             "cycle": self.cycle,
             "difficulty": crate::difficulty::difficulty_info(self.tier).0,
             "prompt": self.active_prompt.as_ref().map(|p| p.kind.as_str()),
