@@ -112,27 +112,30 @@ pub fn oakhaven_lot_anchor(lot: BlacksmithLot) -> LotWorldAnchor {
     match lot {
         BlacksmithLot::Pondside => LotWorldAnchor {
             lot,
-            x: 17.5,
-            z: 13.0,
-            rotation_y: -PI * 0.25,
+            // Between the breach and the spring, door toward the pond road.
+            x: 19.0,
+            z: 9.0,
+            rotation_y: PI * 0.5,
             label: "Pondside Lot".to_string(),
-            hide_terrain_footprint: TerrainFootprint::new(14, 18, 12, 14),
+            hide_terrain_footprint: TerrainFootprint::new(18, 20, 8, 10),
         },
         BlacksmithLot::Market => LotWorldAnchor {
             lot,
-            x: 11.0,
-            z: 5.0,
+            // The north green behind the stalls, facing the trestle road.
+            x: 15.0,
+            z: 3.0,
             rotation_y: 0.0,
             label: "Market Green Lot".to_string(),
-            hide_terrain_footprint: TerrainFootprint::new(10, 12, 4, 6),
+            hide_terrain_footprint: TerrainFootprint::new(14, 16, 2, 4),
         },
         BlacksmithLot::WestGate => LotWorldAnchor {
             lot,
-            x: 4.5,
-            z: 9.5,
+            // The green just inside the gate, door toward the west road.
+            x: 3.0,
+            z: 10.0,
             rotation_y: PI * 0.5,
             label: "West Gate Lot".to_string(),
-            hide_terrain_footprint: TerrainFootprint::new(3, 6, 8, 10),
+            hide_terrain_footprint: TerrainFootprint::new(2, 4, 9, 11),
         },
     }
 }
@@ -158,6 +161,32 @@ pub fn is_near_blacksmith_lot(tx: i32, ty: i32, town: Option<&TownState>) -> boo
     let Some(lot) = town.blacksmith_lot else { return false };
     let anchor = oakhaven_lot_anchor(lot);
     anchor.hide_terrain_footprint.contains_with_margin(tx, ty, 1)
+}
+
+/// The lot the player stands on or beside, if any.
+pub fn lot_beside(tx: i32, ty: i32) -> Option<BlacksmithLot> {
+    oakhaven_lot_anchors()
+        .into_iter()
+        .find(|a| a.hide_terrain_footprint.contains_with_margin(tx, ty, 1))
+        .map(|a| a.lot)
+}
+
+/// Tiles a standing town building occupies: the rebuilt Blacksmith and the
+/// settlers' cottages. Fields and trees stay walkable.
+pub fn building_footprints(town: &TownState) -> Vec<TerrainFootprint> {
+    get_oakhaven_model_placements(Some(town))
+        .iter()
+        .filter_map(|p| {
+            if p.id.starts_with("major:") {
+                p.hide_terrain_footprint
+            } else if p.url == "procedural://village_cottage" {
+                let (x, z) = (p.x.round() as i32, p.z.round() as i32);
+                Some(TerrainFootprint::new(x - 1, x + 1, z - 1, z))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Every terrain footprint hidden by the placements for `town` — the set
@@ -314,8 +343,8 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
         placements.push(placement(
             "growth:tier1_garden_field",
             "procedural://village_field",
-            4.5,
-            4.5,
+            2.5,
+            3.0,
             0.0,
             1.8,
             None,
@@ -337,8 +366,8 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
         placements.push(placement(
             "growth:tier2_settler_cottage",
             "procedural://village_cottage",
-            15.0,
-            2.5,
+            9.0,
+            14.0,
             0.0,
             2.2,
             None,
@@ -364,8 +393,8 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
         placements.push(placement(
             "growth:tier3_east_cottage",
             "procedural://village_cottage",
-            9.5,
-            9.5,
+            16.0,
+            14.0,
             0.0,
             2.2,
             None,
@@ -379,8 +408,8 @@ pub fn get_oakhaven_model_placements(town: Option<&TownState>) -> Vec<WorldModel
         placements.push(placement(
             "growth:tier3_harvest_field",
             "procedural://village_field",
-            17.5,
-            5.0,
+            25.0,
+            14.0,
             0.0,
             1.8,
             None,
@@ -428,9 +457,9 @@ mod tests {
         let anchors = oakhaven_lot_anchors();
         assert_eq!(anchors.len(), 3);
         let expected = [
-            (BlacksmithLot::Pondside, 17.5, 13.0, TerrainFootprint::new(14, 18, 12, 14)),
-            (BlacksmithLot::Market, 11.0, 5.0, TerrainFootprint::new(10, 12, 4, 6)),
-            (BlacksmithLot::WestGate, 4.5, 9.5, TerrainFootprint::new(3, 6, 8, 10)),
+            (BlacksmithLot::Pondside, 19.0, 9.0, TerrainFootprint::new(18, 20, 8, 10)),
+            (BlacksmithLot::Market, 15.0, 3.0, TerrainFootprint::new(14, 16, 2, 4)),
+            (BlacksmithLot::WestGate, 3.0, 10.0, TerrainFootprint::new(2, 4, 9, 11)),
         ];
         for (anchor, (lot, x, z, fp)) in anchors.iter().zip(expected.iter()) {
             assert_eq!(anchor.lot, *lot);
@@ -486,13 +515,13 @@ mod tests {
 
     #[test]
     fn near_blacksmith_lot_uses_footprint_plus_one_tile_margin() {
-        let town = completed_town(BlacksmithLot::Pondside); // fp x 14..=18, z 12..=14
-        assert!(is_near_blacksmith_lot(16, 13, Some(&town))); // inside
-        assert!(is_near_blacksmith_lot(13, 13, Some(&town))); // 1 tile west
-        assert!(is_near_blacksmith_lot(19, 15, Some(&town))); // 1 tile past corner
-        assert!(!is_near_blacksmith_lot(12, 13, Some(&town))); // 2 tiles west
-        assert!(!is_near_blacksmith_lot(16, 13, Some(&create_town_state()))); // not complete
-        assert!(!is_near_blacksmith_lot(16, 13, None));
+        let town = completed_town(BlacksmithLot::Pondside); // fp x 18..=20, z 8..=10
+        assert!(is_near_blacksmith_lot(19, 9, Some(&town))); // inside
+        assert!(is_near_blacksmith_lot(17, 9, Some(&town))); // 1 tile west
+        assert!(is_near_blacksmith_lot(21, 11, Some(&town))); // 1 tile past corner
+        assert!(!is_near_blacksmith_lot(22, 9, Some(&town))); // 2 tiles east
+        assert!(!is_near_blacksmith_lot(19, 9, Some(&create_town_state()))); // not complete
+        assert!(!is_near_blacksmith_lot(19, 9, None));
     }
 
     #[test]
@@ -526,9 +555,44 @@ mod tests {
         // Cutaway guardrail (data side): tiles under a .glb footprint are
         // enumerable from the placements alone, for every town state.
         let town = completed_town(BlacksmithLot::Market);
-        assert!(tile_is_under_model_footprint(11, 5, Some(&town))); // market lot
+        assert!(tile_is_under_model_footprint(15, 3, Some(&town))); // market lot
         assert!(tile_is_under_model_footprint(7, 2, Some(&town))); // forge mesh
         assert!(!tile_is_under_model_footprint(0, 16, Some(&town)));
         assert_eq!(hidden_terrain_footprints(Some(&town)).len(), 8); // 7 base + major
+    }
+
+    /// The whole point of re-placing the lots: every one is open ground in the
+    /// town as drawn, clear of roads, water, people and every other structure.
+    #[test]
+    fn lots_and_growth_fit_the_sinkhole_oakhaven() {
+        use crate::types::TileKind;
+        let map = crate::world::create_oakhaven_map();
+        let at = |x: i32, y: i32| &map.tiles[y as usize][x as usize];
+        for a in oakhaven_lot_anchors() {
+            let f = a.hide_terrain_footprint;
+            for y in f.min_z..=f.max_z {
+                for x in f.min_x..=f.max_x {
+                    assert_eq!(at(x, y).kind, TileKind::Floor, "{:?} covers {:?} at {x},{y}", a.lot, at(x, y).kind);
+                    assert!(!map.npcs.iter().any(|n| (n.x, n.y) == (x, y)), "{:?} covers someone at {x},{y}", a.lot);
+                    assert_ne!((x, y), (map.spawn_point.x, map.spawn_point.y));
+                }
+            }
+        }
+        for lot in [BlacksmithLot::Pondside, BlacksmithLot::Market, BlacksmithLot::WestGate] {
+            let mut town = completed_town(lot);
+            town.population = 99;
+            let mut taken = std::collections::HashSet::new();
+            let cottages = building_footprints(&town);
+            assert_eq!(cottages.len(), 3, "forge and two cottages");
+            for f in cottages {
+                for y in f.min_z..=f.max_z {
+                    for x in f.min_x..=f.max_x {
+                        assert!(taken.insert((x, y)), "two buildings share {x},{y}");
+                        assert_eq!(at(x, y).kind, TileKind::Floor, "building on {:?} at {x},{y}", at(x, y).kind);
+                        assert!(!map.npcs.iter().any(|n| (n.x, n.y) == (x, y)));
+                    }
+                }
+            }
+        }
     }
 }

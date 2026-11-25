@@ -120,6 +120,7 @@ impl GameSession {
         s.cycle = crate::save::bundle_cycle(b);
         s.tile_rev = r.get("tileRev").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         s.restore_internals(extra, as_i32("delveProgress"), as_i32("killsThisDelve"), as_i32("seq").max(1000) as u32);
+        s.settle_town(); // lots moved with the new Oakhaven; older saves follow
         s.fx.clear();
         s.refresh_visibility();
         s.say("Welcome back to ElfStory.");

@@ -14,14 +14,9 @@ const WATER_SHADER: Shader = preload("res://water.gdshader")
 const TILE_SHADER: Shader = preload("res://tile.gdshader")
 const Grass := preload("res://grass.gd")
 const OakhavenDiorama := preload("res://oakhaven_diorama.gd")
-## Pitch C Oakhaven redesign (Nov 24, 2026): hide/retire the town-rebuild UI,
-## lot stakes, and cold forge ruin in Oakhaven while preserving the Rust core
-## (`rust/elfstory-core/src/town.rs` & `town_layout.rs`) for restore or deletion.
-const ENABLE_TOWN_REBUILD_UI := false
 ## Zones whose "floor" tiles grow meadow grass + wildflowers (grass.gd).
 const GRASS_ZONES := ["oakhaven", "overworld"]
 const MOVE_REPEAT := 0.16 # held-key step interval, seconds
-const LOTS := ["pondside", "market", "west_gate"]
 
 # Tile kinds drawn as tall boxes on the second MultiMesh, with box heights.
 const TALL_HEIGHTS := {
@@ -124,8 +119,7 @@ var move_timer := 0.0
 var hud_title: Label
 var hud_body: Label
 var log_label: RichTextLabel
-var town_panel: PanelContainer
-var town_box: VBoxContainer
+var town_screen: TownScreen
 var quest_panel: PanelContainer
 var quest_box: VBoxContainer
 var dialogue_panel: PanelContainer
@@ -281,7 +275,6 @@ func refresh() -> void:
 
 	update_hud()
 	update_log()
-	rebuild_town_panel()
 	rebuild_quest_tracker()
 
 	var zone: Dictionary = state["zone"]
@@ -445,7 +438,8 @@ func rebuild_world() -> void:
 	if str(zone["id"]) == "oakhaven":
 		for p_var: Variant in placements:
 			var p: Dictionary = p_var as Dictionary
-			if p.has("hideTerrainFootprint"):
+			# Rebuilt and grown structures stand on the town's own ground.
+			if p.has("hideTerrainFootprint") and (str(p["id"]).begins_with("landmark:") or str(p["id"]).begins_with("prop:")):
 				var f: Dictionary = p["hideTerrainFootprint"]
 				for tx: int in range(_as_int(f["minX"]), _as_int(f["maxX"]) + 1):
 					for tz: int in range(_as_int(f["minZ"]), _as_int(f["maxZ"]) + 1):
@@ -503,7 +497,8 @@ func rebuild_world() -> void:
 					grass_skip["%d,%d" % [x, y]] = true
 		for p_var: Variant in placements:
 			var p: Dictionary = p_var as Dictionary
-			if str(p.get("url", "")).begins_with("procedural://"):
+			var pid := str(p.get("id", ""))
+			if str(p.get("url", "")).begins_with("procedural://") or pid.begins_with("major:") or pid.begins_with("growth:"):
 				var hw := _as_float(p.get("targetWidthTiles", 2.0), 2.0) * 0.5
 				var px := _as_float(p.get("x", 0.0))
 				var pz := _as_float(p.get("z", 0.0))
@@ -808,14 +803,9 @@ func build_landmarks(placements: Array) -> void:
 		var pid := str(p.get("id", ""))
 		var url := str(p.get("url", ""))
 		var light_data: Variant = p.get("light")
-		if not ENABLE_TOWN_REBUILD_UI:
-			# Pitch C Oakhaven: woodland oaks & platypus are mounted by OakhavenDiorama;
-			# Torin's forge ships lit and operational from turn 1.
-			if pid.begins_with("prop:oak_") or pid == "landmark:old_outpost_oak":
-				continue
-			if pid == "landmark:torin_forge":
-				url = "/models/blacksmith.glb"
-				light_data = {"color": 0xff8c2b, "intensity": 3.6, "distance": 8.0, "offset": [0.0, 1.0, 0.9]}
+		# Pitch C Oakhaven: the woodland oaks and platypus are mounted by OakhavenDiorama.
+		if pid.begins_with("prop:oak_") or pid == "landmark:old_outpost_oak":
+			continue
 		var fname := url.get_file()
 		var target := _as_float(p.get("targetWidthTiles", 3.0), 3.0)
 		var y_off := _as_float(p.get("yOffset", 0.0))
@@ -868,10 +858,7 @@ func build_landmarks(placements: Array) -> void:
 			if col == 0xff8c2b:
 				forge_lights.append(omni)
 
-	if ENABLE_TOWN_REBUILD_UI:
-		var town_dict: Dictionary = state.get("town", {}) as Dictionary
-		if not _as_bool(town_dict.get("blacksmithComplete", false)):
-			build_lot_markers()
+	build_lot_markers()
 
 
 ## Trodden-dirt Decal under a building so it sits *in* the ground instead
@@ -1026,37 +1013,43 @@ func make_village_field(target: float) -> Node3D:
 	return root
 
 
+## Stakes on every open lot, straight from the core so the two can't disagree.
+## Quiet until there is something to build: the name shows once Torin is ready,
+## or while the forge stands elsewhere and could move.
 func build_lot_markers() -> void:
-	var lots: Array[Dictionary] = [
-		{"pos": Vector3(17.5, 0.0, 13.0), "size": Vector2(3.6, 2.6), "label": "Pondside Lot ★"},
-		{"pos": Vector3(11.0, 0.0, 5.0), "size": Vector2(2.6, 2.6), "label": "Market Lot"},
-		{"pos": Vector3(4.5, 0.0, 9.5), "size": Vector2(3.2, 2.6), "label": "West Gate Lot"},
-	]
+	var board := UiKit.as_dict(state.get("townBoard"))
+	var ready := UiKit.as_flag(board.get("canBuild"))
+	var built := UiKit.as_flag(board.get("complete"))
 	var stake_col := Color(0.72, 0.54, 0.24)
-	var rim_col := Color(0.92, 0.72, 0.28)
-	for entry: Dictionary in lots:
+	var rim_col := Color(0.92, 0.72, 0.28) if ready else Color(0.46, 0.36, 0.22)
+	for l_v: Variant in UiKit.as_list(board.get("lots")):
+		var lot := UiKit.as_dict(l_v)
+		if UiKit.as_flag(lot["current"]):
+			continue
 		var marker := Node3D.new()
-		marker.position = entry["pos"] as Vector3
-		var sz: Vector2 = entry["size"] as Vector2
-		var hx := sz.x * 0.5
-		var hz := sz.y * 0.5
+		marker.position = Vector3(_as_float(lot["x"]), 0.0, _as_float(lot["z"]))
+		var w := _as_float(lot["w"]) - 0.3
+		var d := _as_float(lot["d"]) - 0.3
+		var hx := w * 0.5
+		var hz := d * 0.5
 		for sx: float in [-hx, hx]:
-			for sz_p: float in [-hz, hz]:
-				_add_part_box(marker, Vector3(0.12, 0.52, 0.12), Vector3(sx, 0.26, sz_p), stake_col)
-		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, -hz), rim_col)
-		_add_part_box(marker, Vector3(sz.x, 0.06, 0.07), Vector3(0.0, 0.05, hz), rim_col)
-		_add_part_box(marker, Vector3(0.07, 0.06, sz.y), Vector3(-hx, 0.05, 0.0), rim_col)
-		_add_part_box(marker, Vector3(0.07, 0.06, sz.y), Vector3(hx, 0.05, 0.0), rim_col)
-		var lbl := Label3D.new()
-		lbl.text = str(entry["label"])
-		lbl.font_size = 44
-		lbl.pixel_size = 0.007
-		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(1.0, 0.88, 0.52)
-		lbl.outline_size = 8
-		lbl.outline_modulate = Color(0.08, 0.07, 0.05)
-		lbl.position = Vector3(0.0, 1.85, 0.0)
-		marker.add_child(lbl)
+			for sz: float in [-hz, hz]:
+				_add_part_box(marker, Vector3(0.12, 0.52, 0.12), Vector3(sx, 0.26, sz), stake_col)
+		for sz: float in [-hz, hz]:
+			_add_part_box(marker, Vector3(w, 0.05, 0.06), Vector3(0.0, 0.34, sz), rim_col)
+		for sx: float in [-hx, hx]:
+			_add_part_box(marker, Vector3(0.06, 0.05, d), Vector3(sx, 0.34, 0.0), rim_col)
+		if ready or built:
+			var lbl := Label3D.new()
+			lbl.text = str(lot["label"]) + ("  ★" if UiKit.as_flag(lot["wish"]) and not UiKit.as_flag(board.get("wishClaimed")) else "")
+			lbl.font_size = 44
+			lbl.pixel_size = 0.006
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.modulate = Color(1.0, 0.88, 0.52)
+			lbl.outline_size = 8
+			lbl.outline_modulate = Color(0.08, 0.07, 0.05)
+			lbl.position = Vector3(0.0, 1.3, 0.0)
+			marker.add_child(lbl)
 		landmarks_root.add_child(marker)
 
 
@@ -1845,7 +1838,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func screen_open() -> bool:
-	return pack_screen.visible or journal_screen.visible or pause_menu.visible or ending_screen.visible
+	return pack_screen.visible or journal_screen.visible or town_screen.visible or pause_menu.visible or ending_screen.visible
 
 
 func modal_open() -> bool:
@@ -1865,6 +1858,8 @@ func _back() -> void:
 		pack_screen.hide()
 	elif journal_screen.visible:
 		journal_screen.hide()
+	elif town_screen.visible:
+		town_screen.hide()
 	elif ending_screen.visible:
 		ending_screen.hide()
 	elif pause_menu.visible:
@@ -1888,6 +1883,8 @@ func _screen_key(code: Key) -> void:
 		pack_screen.hide()
 	elif code == KEY_J and journal_screen.visible:
 		journal_screen.hide()
+	elif code == KEY_T and town_screen.visible:
+		town_screen.hide()
 
 
 func _shortcut(code: Key) -> bool:
@@ -1896,6 +1893,8 @@ func _shortcut(code: Key) -> bool:
 			pack_screen.open()
 		KEY_J:
 			journal_screen.open()
+		KEY_T:
+			town_screen.open(UiKit.as_dict(state.get("townBoard")))
 		KEY_H:
 			_pack_result(UiKit.parse(session.pack_action("quick_heal", "")))
 		KEY_R:
@@ -2154,24 +2153,6 @@ func build_ui() -> void:
 	log_label.add_theme_color_override("default_color", Color(UI_INK, 0.92))
 	log_panel.add_child(log_label)
 
-	# Town panel, right side (retired in Pitch C when ENABLE_TOWN_REBUILD_UI is false).
-	town_panel = make_panel()
-	town_panel.anchor_left = 1.0
-	town_panel.anchor_right = 1.0
-	town_panel.offset_left = -330
-	town_panel.offset_right = -10
-	town_panel.offset_top = 10
-	town_panel.offset_bottom = 480
-	layer.add_child(town_panel)
-	var town_scroll := ScrollContainer.new()
-	town_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	town_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	town_panel.add_child(town_scroll)
-	town_box = VBoxContainer.new()
-	town_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	town_box.add_theme_constant_override("separation", 4)
-	town_scroll.add_child(town_box)
-
 	# Compact Quest Tracker, top-right.
 	quest_panel = make_panel()
 	quest_panel.anchor_left = 1.0
@@ -2195,7 +2176,8 @@ func build_ui() -> void:
 	dialogue_panel.offset_left = -300
 	dialogue_panel.offset_right = 300
 	dialogue_panel.offset_top = -196
-	dialogue_panel.offset_bottom = -86
+	dialogue_panel.offset_bottom = -92
+	dialogue_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN # long choices grow up, never under the hotbar
 	layer.add_child(dialogue_panel)
 	var dlg_box := VBoxContainer.new()
 	dialogue_panel.add_child(dlg_box)
@@ -2294,6 +2276,9 @@ func build_screens() -> void:
 	journal_screen = JournalScreen.new()
 	layer.add_child(journal_screen)
 	journal_screen.setup(session, ui_theme(), make_panel())
+	town_screen = TownScreen.new()
+	layer.add_child(town_screen)
+	town_screen.setup(ui_theme(), make_panel())
 	ending_screen = EndingScreen.new()
 	layer.add_child(ending_screen)
 	ending_screen.setup(session, ui_theme(), make_panel())
@@ -2335,6 +2320,10 @@ func _open_screen_for_capture(which: String) -> void:
 			pack_screen.open()
 		"journal":
 			journal_screen.open()
+		"town":
+			town_screen.open(UiKit.as_dict(state.get("townBoard")))
+		"lot":
+			handle_event(session.interact())
 		"pause":
 			_open_pause()
 		"ending":
@@ -2454,6 +2443,8 @@ func update_hud() -> void:
 		_fill(companion_bar, companion_text, str(comp.get("name", "Companion")), _as_int(comp.get("hp", 0)), _as_int(comp.get("maxHp", 1), 1))
 		if cd > 0:
 			companion_text.text = "%s reforms in %d" % [str(comp.get("name", "Companion")), cd]
+	if _as_bool(zone.get("isTown", false)) and str(zone["id"]) == "oakhaven":
+		lines.append(_town_line())
 	var points: PackedStringArray = []
 	if _as_int(pl.get("skillPoints", 0)) > 0:
 		points.append("%d skill (K)" % _as_int(pl.get("skillPoints", 0)))
@@ -2462,6 +2453,19 @@ func update_hud() -> void:
 	if not points.is_empty():
 		lines.append("Points to spend: " + ", ".join(points))
 	hud_body.text = "\n".join(lines)
+
+
+## One quiet line in town; the T screen has the rest.
+func _town_line() -> String:
+	var board := UiKit.as_dict(state.get("townBoard"))
+	if UiKit.as_flag(board.get("complete")):
+		return "Oakhaven  tier %d, population %d   (T)" % [_as_int(board.get("tier")), _as_int(board.get("population"))]
+	if UiKit.as_flag(board.get("canBuild")):
+		return "Torin can rebuild: choose a staked lot   (T)"
+	var have := 1 if UiKit.as_flag(board.get("heartcoal")) else 0
+	for p_v: Variant in UiKit.as_list(board.get("pieces")):
+		have += 1 if UiKit.as_flag(UiKit.as_dict(p_v)["found"]) else 0
+	return "Torin's forge  %d of 4 found   (T)" % have
 
 
 func _make_bar(color: Color) -> ProgressBar:
@@ -2513,165 +2517,12 @@ func update_log() -> void:
 	log_label.text = "\n".join(lines)
 
 
-func rebuild_town_panel() -> void:
-	if not ENABLE_TOWN_REBUILD_UI:
-		town_panel.hide()
-		return
-	clear_children(town_box)
-	var zone: Dictionary = state["zone"]
-	if not _as_bool(zone.get("isTown", false)):
-		town_panel.hide()
-		return
-	town_panel.show()
-
-	var town: Dictionary = state.get("town", {}) as Dictionary
-	var pieces: Array = town.get("piecesFound", []) as Array
-	var supplies: Array = town.get("suppliesFound", []) as Array
-	var tier := _as_int(state.get("populationTier", 0))
-	var pop := _as_int(town.get("population", 0))
-	var returns := _as_int(town.get("returns", 0))
-	var stall_cleared := _as_bool(town.get("stallItemFound", false))
-
-	var head := make_label()
-	head.add_theme_font_size_override("font_size", 15)
-	head.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
-	head.text = "Oakhaven — Town & Forge"
-	town_box.add_child(head)
-
-	var summary := make_label()
-	summary.add_theme_font_size_override("font_size", 12)
-	summary.text = "Pieces %d/3 · Pop %d (Tier %d) · Returns %d" % [pieces.size(), pop, tier, returns]
-	town_box.add_child(summary)
-
-	var bonuses: Dictionary = state.get("townTierBonuses", {}) as Dictionary
-	var bonus_l := make_label()
-	bonus_l.add_theme_font_size_override("font_size", 12)
-	if tier > 0:
-		var def_b := _as_int(bonuses.get("def", 0))
-		var def_txt := " · +%d DEF" % def_b if def_b > 0 else ""
-		bonus_l.text = "Tier %d Bonus: +%d HP · +%d ATK · +%d Spell%s" % [
-			tier, _as_int(bonuses.get("maxHp", 0)), _as_int(bonuses.get("atk", 0)), _as_int(bonuses.get("spellPower", 0)), def_txt]
-		bonus_l.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
-	else:
-		bonus_l.text = "Next tier at Pop 20 (+HP/ATK/Spell & village growth)"
-		bonus_l.add_theme_color_override("font_color", Color(0.72, 0.76, 0.82))
-	bonus_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	town_box.add_child(bonus_l)
-
-	# Forge pieces + Heartcoal stall checklist
-	var piece_defs := [
-		["blacksmith_anvil", "Torin's Lost Anvil"],
-		["blacksmith_bellows", "Great Forge Bellows"],
-		["blacksmith_sign", "The Smith's Hanging Sign"],
-	]
-	for pd: Array in piece_defs:
-		var has_p := pieces.has(pd[0])
-		var pl := make_label()
-		pl.add_theme_font_size_override("font_size", 12)
-		pl.text = "%s %s" % ["✓" if has_p else "○", str(pd[1])]
-		pl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_p else Color(0.66, 0.70, 0.76))
-		town_box.add_child(pl)
-
-	var stall_l := make_label()
-	stall_l.add_theme_font_size_override("font_size", 12)
-	stall_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	if stall_cleared:
-		stall_l.text = "✓ Heartcoal — forge lit (growth active)"
-		stall_l.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
-	else:
-		stall_l.text = "✕ Heartcoal — STALLED (growth frozen)"
-		stall_l.add_theme_color_override("font_color", Color(0.95, 0.56, 0.54))
-	town_box.add_child(stall_l)
-
-	var carried: Array = state.get("carriedTownTags", [])
-	if not carried.is_empty():
-		var c := make_label()
-		c.add_theme_font_size_override("font_size", 12)
-		c.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		c.text = "Carrying (bank on return): " + join_strs(carried)
-		c.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
-		town_box.add_child(c)
-
-	var wish_l := make_label()
-	wish_l.add_theme_font_size_override("font_size", 11)
-	wish_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	wish_l.text = "Torin's wish: Pondside Lot (+75g bonus, relocate free anytime)"
-	wish_l.add_theme_color_override("font_color", Color(0.65, 0.82, 0.96))
-	town_box.add_child(wish_l)
-
-	var lot_labels := {
-		"pondside": "Pondside Lot",
-		"market": "Market Green Lot",
-		"west_gate": "West Gate Lot",
-	}
-	if _as_bool(state.get("canCompleteBlacksmith", false)):
-		var hint := make_label()
-		hint.add_theme_font_size_override("font_size", 12)
-		hint.text = "Ready! Choose a lot to rebuild:"
-		hint.add_theme_color_override("font_color", Color(0.98, 0.85, 0.45))
-		town_box.add_child(hint)
-		for lot: String in LOTS:
-			var label := str(lot_labels.get(lot, lot))
-			if lot == "pondside":
-				label += " ★ (+75g wish)"
-			var b := make_button("Build: " + label)
-			b.add_theme_font_size_override("font_size", 12)
-			b.pressed.connect(_on_complete_blacksmith.bind(lot))
-			town_box.add_child(b)
-	elif _as_bool(town.get("blacksmithComplete", false)):
-		var cur := str(town.get("blacksmithLot", ""))
-		var at := make_label()
-		at.add_theme_font_size_override("font_size", 12)
-		at.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		var wish_note := " (wish met)" if _as_bool(town.get("wishSatisfied", false)) else ""
-		at.text = "Forge standing: %s%s" % [str(lot_labels.get(cur, cur)), wish_note]
-		at.add_theme_color_override("font_color", Color(0.55, 0.92, 0.68))
-		town_box.add_child(at)
-		var shop_btn := make_button("Open Blacksmith Shop")
-		shop_btn.add_theme_font_size_override("font_size", 13)
-		shop_btn.pressed.connect(func() -> void: open_merchant("blacksmith"))
-		town_box.add_child(shop_btn)
-		var bonus_claimed := _as_bool(town.get("wishBonusClaimed", false))
-		for lot: String in LOTS:
-			if lot == cur:
-				continue
-			var label := str(lot_labels.get(lot, lot))
-			if lot == "pondside" and not bonus_claimed:
-				label += " (+75g wish)"
-			var b := make_button("Relocate: " + label)
-			b.add_theme_font_size_override("font_size", 12)
-			b.pressed.connect(_on_relocate_blacksmith.bind(lot))
-			town_box.add_child(b)
-
-	var sup_head := make_label()
-	sup_head.add_theme_font_size_override("font_size", 12)
-	sup_head.text = "Regional Supplies (side branches):"
-	sup_head.add_theme_color_override("font_color", Color(0.95, 0.82, 0.50))
-	town_box.add_child(sup_head)
-	var supply_defs := [
-		["barrow_iron", "Barrow Iron (Barrow Fl.1 → Hauberk)"],
-		["mire_timber", "Mire Timber (Fungal Fl.1 → Greatbow)"],
-		["frost_coal", "Frost White-Coal (Frost Fl.1 → Greathelm)"],
-	]
-	for sd: Array in supply_defs:
-		var has_s := supplies.has(sd[0])
-		var sl := make_label()
-		sl.add_theme_font_size_override("font_size", 11)
-		sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		sl.text = "%s %s" % ["✓" if has_s else "○", str(sd[1])]
-		sl.add_theme_color_override("font_color", Color(0.82, 0.95, 0.84) if has_s else Color(0.68, 0.72, 0.78))
-		town_box.add_child(sl)
-
-
 func rebuild_quest_tracker() -> void:
 	var sig := JSON.stringify(state.get("questTracker", []))
-	if sig == _last_quests and not ENABLE_TOWN_REBUILD_UI:
+	if sig == _last_quests:
 		return
 	_last_quests = sig
 	clear_children(quest_box)
-	if ENABLE_TOWN_REBUILD_UI and _as_bool((state.get("zone", {}) as Dictionary).get("isTown", false)):
-		quest_panel.hide()
-		return
 	var rows: Array = state.get("questTracker", []) as Array
 	if rows.is_empty():
 		quest_panel.hide()
@@ -2720,16 +2571,6 @@ func _apply_unlit_capture_mode() -> void:
 	env.glow_enabled = false
 	env.ambient_light_color = Color(0.85, 0.85, 0.85)
 	env.ambient_light_energy = 0.85
-
-
-func _on_complete_blacksmith(lot: String) -> void:
-	session.complete_blacksmith(lot)
-	refresh()
-
-
-func _on_relocate_blacksmith(lot: String) -> void:
-	session.relocate_blacksmith(lot)
-	refresh()
 
 
 # ---------------------------------------------------------------------------
@@ -2924,13 +2765,6 @@ static func _as_float(v: Variant, fallback: float = 0.0) -> float:
 
 static func _as_bool(v: Variant, fallback: bool = false) -> bool:
 	return v if v is bool else fallback
-
-
-func join_strs(arr: Array) -> String:
-	var parts: PackedStringArray = []
-	for v: Variant in arr:
-		parts.append(str(v))
-	return ", ".join(parts)
 
 
 func clear_children(node: Node) -> void:

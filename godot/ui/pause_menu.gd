@@ -9,7 +9,7 @@ signal ending_requested
 
 const CONTROLS := """Move  WASD / arrows, diagonals Q E Z C       Click a tile to walk there
 Act / talk  F or Enter       Wait  Space       Rest  R       Auto-explore  X
-Pack  I       Skills  K       Journal  J       Drink a healing draught  H
+Pack  I       Skills  K       Journal  J       Town  T       Drink a healing draught  H
 Hotbar  1 to 5       Next target  Tab       Camera  V, [ ], mouse wheel
 Gamepad:  stick or D-pad move,  A act,  B back,  X pack,  Y draught,  LB RB turn camera,  Start menu,  Back journal"""
 

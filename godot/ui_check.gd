@@ -19,6 +19,7 @@ func _initialize() -> void:
 		return
 	await _check_pack()
 	await _check_shop()
+	await _check_town()
 	await _check_dungeon()
 	await _check_story()
 	print("UI_CHECK_OK" if _fails == 0 else "UI_CHECK_FAIL %d" % _fails)
@@ -66,6 +67,29 @@ func _check_shop() -> void:
 	await process_frame
 	_ok(UiKit.as_int(_player()["gold"]) > gold, "selling pays")
 	_main.call("_back")
+
+
+func _check_town() -> void:
+	(_main.get("town_screen") as TownScreen).open(UiKit.as_dict(_state()["townBoard"]))
+	_ok(UiKit.as_flag(_main.call("modal_open")), "town screen opens")
+	_main.call("_back")
+	_session.call("debug_set_town", 22, "west_gate") # tier 1, forge at the gate
+	_main.call("refresh")
+	await process_frame
+	var board := UiKit.as_dict(_state()["townBoard"])
+	_ok(UiKit.as_flag(board["complete"]) and UiKit.as_int(board["tier"]) >= 1, "town can be rebuilt and grows")
+	# Walk up to the pondside lot and move the forge there, the way a player does.
+	_session.call("debug_warp", "oakhaven", 18, 11)
+	_main.call("handle_event", str(_session.call("interact")))
+	_ok((_main.get("dialogue_panel") as Control).visible, "standing at a lot offers it")
+	_main.call("_on_prompt_choice", "build_here")
+	await process_frame
+	var moved := ""
+	for l_v: Variant in UiKit.as_list(UiKit.as_dict(_state()["townBoard"])["lots"]):
+		if UiKit.as_flag(UiKit.as_dict(l_v)["current"]):
+			moved = str(UiKit.as_dict(l_v)["id"])
+	_ok(moved == "pondside", "and moves the forge")
+	_ok(not (_main.get("dialogue_panel") as Control).visible, "then gets out of the way")
 
 
 func _check_dungeon() -> void:

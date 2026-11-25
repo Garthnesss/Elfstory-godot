@@ -33,6 +33,7 @@ pub enum PromptKind {
     Forge,
     Altar,
     Shrine,
+    Lot,
 }
 
 impl PromptKind {
@@ -47,6 +48,7 @@ impl PromptKind {
             PromptKind::Forge => "forge",
             PromptKind::Altar => "altar",
             PromptKind::Shrine => "shrine",
+            PromptKind::Lot => "lot",
         }
     }
 }
@@ -742,6 +744,46 @@ impl GameSession {
         }
     }
 
+    // ------------------------------------------------------------ town lots
+
+    /// Standing at a building lot: raise the Blacksmith, move it here, or hear
+    /// what is still missing. Always optional; nothing in the story needs it.
+    pub(crate) fn open_lot_prompt(&mut self, lot: crate::town::BlacksmithLot) -> SessionEvent {
+        let label = crate::town_layout::oakhaven_lot_anchor(lot).label;
+        let wish = lot == crate::town::BlacksmithLot::Pondside && !self.town.wish_bonus_claimed;
+        let bonus = if wish { " (Torin's wish: +75 gold)" } else { "" };
+        let mut options = vec![];
+        let body = if self.town.blacksmith_complete {
+            options.push(opt("build_here", format!("Move the Blacksmith here, free{bonus}"), "primary", false));
+            "Torin's crew can have the whole forge moved by morning. He says that every time.".to_string()
+        } else if self.can_complete_blacksmith() {
+            options.push(opt("build_here", format!("Raise the Blacksmith here{bonus}"), "primary", false));
+            "Anvil, bellows, sign and a living coal. Everything Torin needs is banked; he only wants to know where. It can be moved later for free.".to_string()
+        } else {
+            let mut missing: Vec<String> = crate::town::BLACKSMITH_PIECES
+                .iter()
+                .filter(|p| !self.town.pieces_found.iter().any(|f| f == p.tag))
+                .map(|p| p.name.to_string())
+                .collect();
+            if !self.town.stall_item_found {
+                missing.push("Heartcoal".into());
+            }
+            let carried = if self.carried_town_tags().is_empty() { "" } else { " What you are carrying counts once you have come home with it." };
+            format!("Staked ground, waiting. Torin's forge could stand here. Still lost in the Reliquary: {}.{carried}", missing.join(", "))
+        };
+        options.push(opt("leave_lot", "Step away".into(), "secondary", false));
+        self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Lot,
+            x: self.player.x,
+            y: self.player.y,
+            target_id: Some(lot.as_str().to_string()),
+            title: label,
+            subtitle: "Oakhaven building lot".into(),
+            body,
+            options,
+        })
+    }
+
     // ------------------------------------------------------------ story tiles
 
     fn mark_used(&mut self, x: i32, y: i32) {
@@ -1203,6 +1245,16 @@ impl GameSession {
             (PromptKind::Altar, id) => self.resolve_altar(prompt.x, prompt.y, id),
             (PromptKind::Shrine, id) => {
                 self.resolve_shrine(prompt.x, prompt.y, id);
+                SessionEvent::None
+            }
+            (PromptKind::Lot, "build_here") => {
+                if let Some(lot) = prompt.target_id.as_deref().and_then(crate::town::BlacksmithLot::parse) {
+                    if self.town.blacksmith_complete {
+                        self.relocate_blacksmith(lot);
+                    } else {
+                        self.complete_blacksmith(lot);
+                    }
+                }
                 SessionEvent::None
             }
             (PromptKind::BossConfrontation, _) => {

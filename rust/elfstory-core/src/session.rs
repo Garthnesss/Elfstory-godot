@@ -705,6 +705,7 @@ impl GameSession {
         next.player.max_mana = d.max_mana;
         next.player.mana = d.max_mana;
         next.tile_rev = self.tile_rev + 1;
+        next.settle_town();
         next.refresh_visibility();
         next.say(&format!("The Ashen Glyph turns once more. You ascend to Cycle {}: the Vale is remade, its foes hardened, and everything earned is carried into the new descent.", next.cycle));
         *self = next;
@@ -861,6 +862,7 @@ impl GameSession {
         self.player.max_mana = d.max_mana;
         self.player.mana = d.max_mana;
         self.fx.clear();
+        self.settle_town();
     }
 
     fn place_companion_on_entry(&mut self, heal: bool) {
@@ -983,6 +985,7 @@ impl GameSession {
         self.player.x = spawn.x;
         self.player.y = spawn.y;
         self.place_companion_on_entry(true);
+        self.settle_town();
         if next_tier > prev_tier {
             let d = self.derived();
             self.player.max_hp = d.max_hp;
@@ -1065,6 +1068,11 @@ impl GameSession {
         {
             return SessionEvent::OpenMerchant("blacksmith".into());
         }
+        if self.current == ZoneId::Oakhaven {
+            if let Some(lot) = crate::town_layout::lot_beside(px, py) {
+                return self.open_lot_prompt(lot);
+            }
+        }
         // TS handleInteractAction: the tile underfoot, then the 8 around.
         if let Some(ev) = self.interact_with_world_tile(px, py) {
             return ev;
@@ -1118,6 +1126,7 @@ impl GameSession {
                 let (px, py) = (self.player.x, self.player.y);
                 self.fx("town_tier_up", px, py);
             }
+            self.settle_town();
         }
         result.completed
     }
@@ -1138,8 +1147,118 @@ impl GameSession {
             } else {
                 self.say(&format!("Relocated the rebuilt Blacksmith to the {}.", anchor.label));
             }
+            self.settle_town();
         }
         changed
+    }
+
+    /// Make the town's walkable ground match what stands on it, and move anyone
+    /// caught where a wall went up. Safe to call any time.
+    pub(crate) fn settle_town(&mut self) {
+        let key = ZoneId::Oakhaven.to_string_id();
+        let solid = crate::town_layout::building_footprints(&self.town);
+        let base = create_oakhaven_map();
+        let in_town = self.current == ZoneId::Oakhaven;
+        let Some(zone) = self.zones.get_mut(&key) else { return };
+        let mut changed = false;
+        for (row, base_row) in zone.tiles.iter_mut().zip(&base.tiles) {
+            for (t, b) in row.iter_mut().zip(base_row) {
+                let open = b.walkable && !solid.iter().any(|f| f.contains(t.x, t.y));
+                changed |= t.walkable != open;
+                t.walkable = open;
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.tile_rev += 1;
+        let free = |zone: &ZoneMap, x: i32, y: i32, taken: &[(i32, i32)]| -> (i32, i32) {
+            let ok = |x: i32, y: i32| {
+                zone.tiles.get(y as usize).and_then(|r| r.get(x as usize)).is_some_and(|t| t.walkable && t.kind != TileKind::StairsDown)
+                    && !taken.contains(&(x, y))
+            };
+            if ok(x, y) {
+                return (x, y);
+            }
+            for r in 1..12i32 {
+                for oy in -r..=r {
+                    for ox in -r..=r {
+                        if (ox.abs() == r || oy.abs() == r) && ok(x + ox, y + oy) {
+                            return (x + ox, y + oy);
+                        }
+                    }
+                }
+            }
+            (zone.spawn_point.x, zone.spawn_point.y)
+        };
+        let mut taken: Vec<(i32, i32)> = vec![];
+        if in_town {
+            let (x, y) = free(zone, self.player.x, self.player.y, &taken);
+            self.player.x = x;
+            self.player.y = y;
+            taken.push((x, y));
+        }
+        for i in 0..zone.npcs.len() {
+            let at = free(zone, zone.npcs[i].x, zone.npcs[i].y, &taken);
+            zone.npcs[i].x = at.0;
+            zone.npcs[i].y = at.1;
+            taken.push(at);
+        }
+        for i in 0..zone.critters.as_ref().map_or(0, Vec::len) {
+            let (x, y) = zone.critters.as_ref().map_or((0, 0), |c| (c[i].x, c[i].y));
+            let at = free(zone, x, y, &taken);
+            if let Some(c) = zone.critters.as_mut() {
+                c[i].x = at.0;
+                c[i].y = at.1;
+            }
+            taken.push(at);
+        }
+        for i in 0..zone.loot.len() {
+            let at = free(zone, zone.loot[i].x, zone.loot[i].y, &[]);
+            zone.loot[i].x = at.0;
+            zone.loot[i].y = at.1;
+        }
+        if in_town {
+            let pos = crate::combat_turn::place_companion_near(self.zone(), self.player.x, self.player.y);
+            if let Some(c) = self.player.companion.as_mut() {
+                c.x = pos.x;
+                c.y = pos.y;
+            }
+            self.refresh_visibility();
+        }
+    }
+
+    /// What the town screen and the lot stakes show.
+    pub fn town_json(&self) -> Value {
+        let t = &self.town;
+        let pieces: Vec<Value> = crate::town::BLACKSMITH_PIECES
+            .iter()
+            .map(|p| json!({ "tag": p.tag, "name": p.name, "found": t.pieces_found.iter().any(|f| f == p.tag) }))
+            .collect();
+        let supplies: Vec<Value> = crate::town::TOWN_SUPPLIES
+            .iter()
+            .map(|s| json!({ "name": s.name, "unlocks": s.unlock_item_name, "found": t.supplies_found.iter().any(|f| f == &s.tag) }))
+            .collect();
+        let lots: Vec<Value> = crate::town_layout::oakhaven_lot_anchors()
+            .iter()
+            .map(|a| {
+                let f = a.hide_terrain_footprint;
+                json!({
+                    "id": a.lot.as_str(), "label": a.label, "x": a.x, "z": a.z,
+                    "w": f.max_x - f.min_x + 1, "d": f.max_z - f.min_z + 1,
+                    "wish": a.lot == BlacksmithLot::Pondside,
+                    "current": t.blacksmith_complete && t.blacksmith_lot == Some(a.lot),
+                })
+            })
+            .collect();
+        json!({
+            "pieces": pieces, "supplies": supplies, "lots": lots,
+            "heartcoal": t.stall_item_found, "population": t.population, "returns": t.returns,
+            "tier": crate::town::population_tier(t),
+            "bonuses": crate::town::get_town_tier_bonuses(Some(t)),
+            "complete": t.blacksmith_complete, "canBuild": self.can_complete_blacksmith(),
+            "wishClaimed": t.wish_bonus_claimed,
+        })
     }
 
     /// TS merchant resolution: once the Blacksmith is rebuilt, Torin's
@@ -1965,6 +2084,7 @@ impl GameSession {
             "populationTier": crate::town::population_tier(&self.town),
             "townTierBonuses": crate::town::get_town_tier_bonuses(Some(&self.town)),
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
+            "townBoard": self.town_json(),
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "questTracker": self.quest_tracker_json(),
             "npcMarkers": self.npc_markers_json(),
@@ -2374,6 +2494,117 @@ mod tests {
         let potion = create_consumable(&mut s.id_gen, ConsumableKind::HealPotion, 1);
         s.add_item_to_player(potion);
         assert_eq!(s.player.inventory.len(), n);
+    }
+
+    fn ready_to_build() -> GameSession {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        for p in crate::town::BLACKSMITH_PIECES {
+            s.town.pieces_found.push(p.tag.into());
+        }
+        s.town.stall_item_found = true;
+        s
+    }
+
+    /// Everywhere the player can walk to in Oakhaven.
+    fn reach(s: &GameSession) -> std::collections::HashSet<(i32, i32)> {
+        let z = &s.zones["oakhaven"];
+        let start = (z.spawn_point.x, z.spawn_point.y);
+        let mut seen = std::collections::HashSet::from([start]);
+        let mut todo = vec![start];
+        while let Some((x, y)) = todo.pop() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (x + dx, y + dy);
+                let open = z.tiles.get(n.1 as usize).and_then(|r| r.get(n.0 as usize)).is_some_and(|t| t.walkable);
+                if open && seen.insert(n) {
+                    todo.push(n);
+                }
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn every_lot_at_every_tier_leaves_the_town_walkable() {
+        for lot in [BlacksmithLot::Pondside, BlacksmithLot::Market, BlacksmithLot::WestGate] {
+            for pop in [12, 22, 38, 99] {
+                let mut s = ready_to_build();
+                s.town.population = pop;
+                assert!(s.complete_blacksmith(lot));
+                let ok = reach(&s);
+                let z = &s.zones["oakhaven"];
+                let beside = |x: i32, y: i32| (-1..=1).any(|oy| (-1..=1).any(|ox| ok.contains(&(x + ox, y + oy))));
+                for n in &z.npcs {
+                    assert!(beside(n.x, n.y), "{lot:?} pop {pop}: cannot reach {}", n.id);
+                    assert!(z.tiles[n.y as usize][n.x as usize].walkable, "{} is in a wall", n.id);
+                }
+                assert!(ok.contains(&(0, 7)), "{lot:?} pop {pop}: gate cut off");
+                let stairs = z.tiles.iter().flatten().find(|t| t.kind == TileKind::StairsDown).unwrap();
+                assert!(ok.contains(&(stairs.x, stairs.y)), "{lot:?} pop {pop}: stairs cut off");
+                for a in crate::town_layout::oakhaven_lot_anchors() {
+                    assert!(ok.iter().any(|(x, y)| crate::town_layout::lot_beside(*x, *y) == Some(a.lot)), "{:?} unreachable", a.lot);
+                }
+                let (px, py) = (s.player.x, s.player.y);
+                assert!(z.tiles[py as usize][px as usize].walkable);
+            }
+        }
+    }
+
+    #[test]
+    fn the_blacksmith_is_raised_and_moved_by_standing_at_a_lot() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        s.player.x = 4;
+        s.player.y = 8; // beside the West Gate lot
+        assert_eq!(s.interact(), SessionEvent::OpenPrompt("lot".into()));
+        let p = s.prompt_json();
+        assert_eq!(p["options"].as_array().unwrap().len(), 1, "nothing to build yet, only a way out");
+        assert!(p["body"].as_str().unwrap().contains("Heartcoal"));
+        s.choose_prompt("build_here");
+        assert!(!s.town.blacksmith_complete);
+        s.choose_prompt("leave_lot");
+
+        let mut s = ready_to_build();
+        s.player.x = 3;
+        s.player.y = 10; // standing on the lot itself
+        s.interact();
+        s.choose_prompt("build_here");
+        assert_eq!(s.town.blacksmith_lot, Some(BlacksmithLot::WestGate));
+        let here = &s.zone().tiles[s.player.y as usize][s.player.x as usize];
+        assert!(here.walkable, "the builder is moved out of the new wall");
+        assert!(!s.zone().tiles[10][3].walkable);
+        // Its own lot is now the shop.
+        s.player.x = 1;
+        s.player.y = 10;
+        assert_eq!(s.interact(), SessionEvent::OpenMerchant("blacksmith".into()));
+        // Move it, for free and with the wish paid once.
+        let gold = s.player.gold;
+        s.player.x = 18;
+        s.player.y = 11;
+        s.interact();
+        s.choose_prompt("build_here");
+        assert_eq!(s.town.blacksmith_lot, Some(BlacksmithLot::Pondside));
+        assert_eq!(s.player.gold, gold + 75);
+        assert!(s.zone().tiles[10][3].walkable, "the old lot is open ground again");
+        assert!(!s.zone().tiles[9][19].walkable);
+    }
+
+    #[test]
+    fn old_saves_take_up_the_new_lots() {
+        let mut s = ready_to_build();
+        s.complete_blacksmith(BlacksmithLot::Market);
+        let mut b = s.to_bundle(0);
+        // A save from before buildings were solid.
+        let fresh = serde_json::to_value(create_oakhaven_map()).unwrap();
+        b["zones"]["oakhaven"] = fresh;
+        let back = GameSession::from_bundle(&b).unwrap();
+        assert!(!back.zones["oakhaven"].tiles[3][15].walkable);
+    }
+
+    #[test]
+    fn rebuilding_is_optional_for_the_story() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 9);
+        s.debug_warp(ZoneId::Dungeon(5), -1, -1);
+        slay(&mut s, "boss_malakor", EnemyArchetype::BossMalakor);
+        assert!(s.ending_pending() && !s.town.blacksmith_complete);
     }
 
     #[test]

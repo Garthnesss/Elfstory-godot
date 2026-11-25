@@ -8,16 +8,19 @@ An AI may write PLANNED or UNPLAYED. Only Garth writes PLAYED or VERIFIED.
 |---|---|---|
 | Pack, equipment, shop selling and tempering, attributes, capstones | UNPLAYED | `pack.rs` 11 tests, `ui_check.gd` 16 checks |
 | Fog of war, auto-explore, click to walk, gamepad, pause and options | UNPLAYED | `explore.rs` 3 tests, `ui_check.gd`, captures |
-| All 10 quests completable, hazards, ending, New Game+ | UNPLAYED | `session.rs` tests, 133 Rust tests in all |
+| All 10 quests completable, hazards, ending, New Game+ | UNPLAYED | `session.rs` tests, 138 Rust tests in all |
+| Optional town rebuilding on the Pitch C layout (stand at a staked lot, F; T shows progress) | UNPLAYED | `town_layout.rs` and `session.rs` tests, `ui_check.gd`, captures of all three lots |
 
 ### Play queue for Garth
 1. **New game, 20 minutes, no guide.** Did you equip something without being told how? (I opens the pack.)
 2. **Fog:** does not seeing the whole floor make it better or just slower? X auto-explores.
 3. **One quest to the end.** Seven of ten could not be finished before this branch.
-4. **The question underneath (below): is ElfStory still about the town?**
+4. **Raise Torin's forge.** Bring the pieces home, stand at a staked lot, press F. Then move it. Does where it stands matter to you?
+
+### Decided
+- **2026-11-25, Garth:** town rebuilding stays, as an option; only the starting layout was meant to change. So Pitch C is the starting Oakhaven, the three lots and the growth buildings moved to fit it, and no quest or the ending needs a rebuild. Because the forge can be rebuilt again, Torin starts at his cold ruin (Pitch C lit it from turn one). Old saves move to the new lots on load.
 
 ### Needs Garth's decision
-- **The one sentence no longer describes the game.** PROJECT_TRUTH says the game passes if a player says "my town changed my next run". Pitch C (Nov 24) hid town rebuilding. The rules still run unseen: pieces still drop, population still ticks. Bring it back, or rewrite the sentence. Nothing here changes either way.
 - **Shops never restock.** Buying now removes the item (the web rule; before, shelves were infinite). Potions are therefore finite per merchant. Restock on each alive return is a small change if you want it.
 - **Public repository, about 290 MB, no license file.** It holds every concept and gate render. Private, or trimmed, or licensed: your call. Binaries stay out of LFS until then.
 - **Only the Vanguard has a figure.** Shadowcraft, Runecaster and Wanderer play as a capsule.
