@@ -1,0 +1,27 @@
+{
+  "pipeline_version": "2.2.0",
+  "engine": "4.7.2.stable",
+  "phase": 2,
+  "max_unplayed": 3,
+  "ai_policy": "undecided",
+  "vendor_skip": [
+    ".github/workflows/verify.yml"
+  ],
+  "assets": {
+    "ship_dirs": [
+      "assets/models"
+    ],
+    "proxy_dirs": [
+      "assets/proxies"
+    ],
+    "approval": "error",
+    "max_glb_kb": {
+      "default": 3500
+    },
+    "max_tris": {
+      "default": 50000
+    },
+    "max_proxy_kb": 8000,
+    "max_texture_px": 2048
+  }
+}

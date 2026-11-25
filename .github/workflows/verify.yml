@@ -1,0 +1,25 @@
+name: verify
+# The bridge library is macOS-only, so Linux checks the rules (all of them are in
+# Rust) and a Mac runner checks the game itself.
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency: { group: "verify-${{ github.ref }}", cancel-in-progress: true }
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd rust && cargo test --locked -p elfstory-core
+  game:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: cd rust && cargo build --locked -p elfstory-gdext
+      - name: Install Godot (checksum verified)
+        run: echo "GODOT=$(tools/pipeline/install_godot.sh)" >> "$GITHUB_ENV"
+      - run: tools/pipeline/godot_verify.sh godot --no-cargo

@@ -3,7 +3,8 @@
 
 # Godot 4
 /godot/.godot/
-*.import
+*.translation
+# Never ignore *.import or *.uid: they hold import settings and resource identity.
 
 # macOS
 .DS_Store

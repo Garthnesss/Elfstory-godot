@@ -1,5 +1,39 @@
 # ElfStory Reborn (Godot 4 + Rust) — Status
 
+## Feature states (pipeline, 2026-11-25)
+
+An AI may write PLANNED or UNPLAYED. Only Garth writes PLAYED or VERIFIED.
+
+| Feature | State | Evidence |
+|---|---|---|
+| Pack, equipment, shop selling and tempering, attributes, capstones | UNPLAYED | `pack.rs` 11 tests, `ui_check.gd` 16 checks |
+| Fog of war, auto-explore, click to walk, gamepad, pause and options | UNPLAYED | `explore.rs` 3 tests, `ui_check.gd`, captures |
+| All 10 quests completable, hazards, ending, New Game+ | UNPLAYED | `session.rs` tests, 133 Rust tests in all |
+
+### Play queue for Garth
+1. **New game, 20 minutes, no guide.** Did you equip something without being told how? (I opens the pack.)
+2. **Fog:** does not seeing the whole floor make it better or just slower? X auto-explores.
+3. **One quest to the end.** Seven of ten could not be finished before this branch.
+4. **The question underneath (below): is ElfStory still about the town?**
+
+### Needs Garth's decision
+- **The one sentence no longer describes the game.** PROJECT_TRUTH says the game passes if a player says "my town changed my next run". Pitch C (Nov 24) hid town rebuilding. The rules still run unseen: pieces still drop, population still ticks. Bring it back, or rewrite the sentence. Nothing here changes either way.
+- **Shops never restock.** Buying now removes the item (the web rule; before, shelves were infinite). Potions are therefore finite per merchant. Restock on each alive return is a small change if you want it.
+- **Public repository, about 290 MB, no license file.** It holds every concept and gate render. Private, or trimmed, or licensed: your call. Binaries stay out of LFS until then.
+- **Only the Vanguard has a figure.** Shadowcraft, Runecaster and Wanderer play as a capsule.
+- **No music in the game.**
+
+### Measured (1280x720, this Mac)
+| | Before | After |
+|---|---|---|
+| Triangles, Oakhaven / dungeon / Vale | 5.9M / 1.76M / 2.31M | 2.98M / 0.20M / 0.70M |
+| Draw calls, same | 1162 / 206 / 249 | 619 / 65 / 82 |
+| Cost of one turn (`refresh`) | 2.0 / 3.1 / 3.0 ms | 0.8 / 1.5 / 1.3 ms |
+| Release app | `Main.gd` failed to load | exports and runs (`build_app.sh --smoke`) |
+
+Frame time on this Mac is about 5 ms either way; the savings matter on smaller machines.
+
+
 **2026-11-20 — Milestone 0 (Bootstrap & Handoff) Complete:**
 - Created `Garthnesss/Elfstory-godot` at `/Users/gerth/Projects/elfstory-godot` as the standalone desktop successor to `/Users/gerth/Projects/elfstoryreborn`.
 - Installed Rust toolchain (`rustup` / `rustc` / `cargo` on Apple Silicon `aarch64-apple-darwin`) alongside local Godot **4.7.2** (`/Applications/Godot.app`).

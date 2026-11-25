@@ -241,7 +241,7 @@ func _maybe_smoke_capture() -> void:
 					var parts := a.trim_prefix("--elfstory-warp=").split(",")
 					var wx := int(parts[1]) if parts.size() > 2 else -1
 					var wy := int(parts[2]) if parts.size() > 2 else -1
-					session.debug_warp(parts[0], wx, wy)
+					session.call("debug_warp", parts[0], wx, wy)
 					camera_snapped = false
 					refresh()
 				elif a.begins_with("--elfstory-demo-town=") and session.has_method("debug_set_town"):
@@ -250,7 +250,7 @@ func _maybe_smoke_capture() -> void:
 					var tier_pops: Array[int] = [12, 22, 38, 58]
 					var pop: int = tier_pops[arg_v] if (arg_v >= 0 and arg_v <= 3) else arg_v
 					var lot := parts[1] if parts.size() > 1 else ""
-					session.debug_set_town(pop, lot)
+					session.call("debug_set_town", pop, lot)
 					refresh()
 				elif a == "--elfstory-unlit":
 					_apply_unlit_capture_mode()
@@ -2339,7 +2339,7 @@ func _open_screen_for_capture(which: String) -> void:
 			_open_pause()
 		"ending":
 			if session.has_method("debug_finish_story"):
-				session.debug_finish_story()
+				session.call("debug_finish_story")
 			ending_screen.open()
 		"shop":
 			open_merchant("torin")

@@ -4,6 +4,8 @@ Current direction is in `PROJECT_TRUTH.md` (Combined Model: Dark Cloud majors + 
 
 **Scope is still forming (Garth, Nov 21, 2026).** The full shape of the game isn't decided yet and will change as we build, until Garth says it's settled. Treat this roadmap as the current plan, not a contract: when Garth makes a new call, update the affected docs with a dated note rather than defending the old plan.
 
+> **Correction, 2026-11-25.** Milestones 2 and 3 ticked the inventory, gamepad navigation, quests, NG+ and the endings, but the front-end had no inventory, seven quests could not be finished, and nothing happened when Malakor died. They are built on branch `pipeline/optimize` and wait for Garth to play them. Still not ported from the web game: Hardcore, Travel map, Hall of Fame, Credits, tutorial coach marks, ambient barks.
+
 ## Milestone 0 — Repo Bootstrap & Toolchain (DONE 2026-11-20)
 - [x] Install Rust toolchain (`rustup` / `rustc` / `cargo`) on Apple Silicon Mac alongside Godot 4.7.2 (`/Applications/Godot.app`).
 - [x] Create `Garthnesss/Elfstory-godot` with canonical docs (`PROJECT_TRUTH.md`, `AGENTS.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `STATUS.md`, `HANDOFF.md`), Nov 19 audit archive, V2 Blender/ComfyUI pipeline tools, V2 `.glb` models, and portraits.
