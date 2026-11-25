@@ -8,6 +8,15 @@ use elfstory_core::town::BlacksmithLot;
 use elfstory_core::types::{SaveSlotId, StarterClass};
 use godot::prelude::*;
 
+/// {"ok", "msg", "event"} for pack actions and auto-walk.
+fn outcome(r: Result<(String, SessionEvent), String>) -> GString {
+    let v = match r {
+        Ok((msg, ev)) => serde_json::json!({ "ok": true, "msg": msg, "event": event_name(ev) }),
+        Err(msg) => serde_json::json!({ "ok": false, "msg": msg, "event": "none" }),
+    };
+    GString::from(&v.to_string())
+}
+
 struct ElfStoryExtension;
 
 #[gdextension]
@@ -326,6 +335,111 @@ impl ElfStorySession {
         match &mut self.inner {
             Some(s) => GString::from(&serde_json::to_string(&s.take_fx()).unwrap_or_else(|_| "[]".into())),
             None => GString::from("[]"),
+        }
+    }
+
+    // ---- pack / character / journal (pack.rs, explore.rs) ----
+
+    /// `state_json` without terrain the caller already holds.
+    #[func]
+    fn snapshot_json(&self, known_zone: GString, known_rev: i64) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.snapshot_json(&known_zone.to_string(), known_rev.max(0) as u32).to_string()),
+            None => GString::from("{}"),
+        }
+    }
+
+    #[func]
+    fn pack_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.pack_json().to_string()),
+            None => GString::from("{}"),
+        }
+    }
+
+    #[func]
+    fn journal_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.journal_json().to_string()),
+            None => GString::from("{}"),
+        }
+    }
+
+    /// One pack or character action by name; `arg` is an item, slot,
+    /// attribute, capstone or skill id. Returns {ok, msg, event}.
+    #[func]
+    fn pack_action(&mut self, action: GString, arg: GString) -> GString {
+        use elfstory_core::types::{AttributeKey, ItemSlot, ProdigyId, SkillId};
+        let Some(s) = &mut self.inner else {
+            return outcome(Err("No game is running.".into()));
+        };
+        let arg = arg.to_string();
+        let quiet = |r: Result<String, String>| r.map(|m| (m, SessionEvent::None));
+        let bad = || Err("Unknown id.".to_string());
+        outcome(match action.to_string().as_str() {
+            "equip" => quiet(s.equip_item(&arg)),
+            "unequip" => ItemSlot::parse(&arg).map_or_else(bad, |k| quiet(s.unequip_slot(k))),
+            "use" => s.use_item(&arg).map(|ev| (String::new(), ev)),
+            "quick_heal" => s.quick_heal().map(|ev| (String::new(), ev)),
+            "salvage" => quiet(s.salvage_item(&arg)),
+            "salvage_common" => quiet(s.salvage_common()),
+            "sell" => quiet(s.sell_item(&arg)),
+            "temper" => quiet(s.temper_item(&arg)),
+            "attribute" => AttributeKey::parse(&arg).map_or_else(bad, |k| quiet(s.spend_attribute(k))),
+            "capstone" => ProdigyId::parse(&arg).map_or_else(bad, |k| quiet(s.claim_prodigy(k))),
+            "rest" => quiet(s.safe_rest()),
+            // "<skill id>:<slot 0-4>"
+            "hotbar" => match arg.split_once(':').and_then(|(id, n)| Some((SkillId::parse(id)?, n.parse::<usize>().ok()?))) {
+                Some((id, n)) if s.assign_hotbar(id, n) => Ok((String::new(), SessionEvent::None)),
+                _ => Err("That skill can't go there.".into()),
+            },
+            _ => bad(),
+        })
+    }
+
+    #[func]
+    fn auto_explore_step(&mut self) -> GString {
+        match &mut self.inner {
+            Some(s) => outcome(s.auto_explore_step().map(|ev| (String::new(), ev))),
+            None => outcome(Err("No game is running.".into())),
+        }
+    }
+
+    #[func]
+    fn travel_step(&mut self, x: i32, y: i32) -> GString {
+        match &mut self.inner {
+            Some(s) => outcome(s.travel_step(x, y).map(|ev| (String::new(), ev))),
+            None => outcome(Err("No game is running.".into())),
+        }
+    }
+
+    #[func]
+    fn ending_json(&self) -> GString {
+        match &self.inner {
+            Some(s) => GString::from(&s.ending_json().to_string()),
+            None => GString::from("{}"),
+        }
+    }
+
+    #[func]
+    fn acknowledge_ending(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.acknowledge_ending();
+        }
+    }
+
+    /// New Game+; false before the ending.
+    #[func]
+    fn ascend(&mut self) -> bool {
+        self.inner.as_mut().is_some_and(|s| s.ascend())
+    }
+
+    /// Dev/capture only (debug builds): show the ending without the fight.
+    #[cfg(debug_assertions)]
+    #[func]
+    fn debug_finish_story(&mut self) {
+        if let Some(s) = &mut self.inner {
+            s.flags.malakor_defeated = Some(true);
         }
     }
 

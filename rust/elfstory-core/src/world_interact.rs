@@ -28,6 +28,11 @@ pub enum PromptKind {
     Vault,
     Waystone,
     BossConfrontation,
+    Lore,
+    Bell,
+    Forge,
+    Altar,
+    Shrine,
 }
 
 impl PromptKind {
@@ -37,6 +42,11 @@ impl PromptKind {
             PromptKind::Vault => "vault",
             PromptKind::Waystone => "waystone",
             PromptKind::BossConfrontation => "boss_confrontation",
+            PromptKind::Lore => "lore",
+            PromptKind::Bell => "bell",
+            PromptKind::Forge => "forge",
+            PromptKind::Altar => "altar",
+            PromptKind::Shrine => "shrine",
         }
     }
 }
@@ -156,6 +166,19 @@ impl GameSession {
                 self.say("Sister Wren's vigil candles warm your hands — HP and MP restored.");
                 Some(SessionEvent::None)
             }
+            TileKind::Shrine => Some(self.open_shrine_prompt(x, y, used)),
+            TileKind::LoreTablet => self.read_stele(x, y, tile.interact_id.as_deref()),
+            TileKind::ContrabandCache if !used => {
+                self.loot_cache(x, y);
+                Some(SessionEvent::None)
+            }
+            TileKind::HerbNode if !used && !self.zone().is_town => {
+                self.gather_herb(x, y);
+                Some(SessionEvent::None)
+            }
+            TileKind::WhisperingBell if !used => Some(self.touch_bell(x, y)),
+            TileKind::ForgottenForge if !used => Some(self.open_forge_prompt(x, y)),
+            TileKind::CursedAltar if !used => Some(self.open_altar_prompt(x, y)),
             _ if tile.interact_id.as_deref() == Some("poi_old_oak") => {
                 self.fx("pickup", x, y);
                 self.say("The Old Outpost Oak grips the breach rim with roots thicker than siege timbers.");
@@ -719,6 +742,416 @@ impl GameSession {
         }
     }
 
+    // ------------------------------------------------------------ story tiles
+
+    fn mark_used(&mut self, x: i32, y: i32) {
+        if let Some(t) = self.tile_mut(x, y) {
+            t.used = Some(true);
+        }
+        self.tile_rev += 1;
+    }
+
+    /// Record a lore id; progresses Rowan's survey. True when it is new.
+    fn record_lore(&mut self, id: &str) -> bool {
+        if self.flags.read_lore_ids.iter().any(|l| l == id) {
+            return false;
+        }
+        self.flags.read_lore_ids.push(id.to_string());
+        let count = (self.flags.read_lore_ids.len() as i32).min(6);
+        if let Some(q) = self.quests.get_mut("deep_survey") {
+            if q.status == QuestStatus::Active && count > q.stage {
+                q.stage = count;
+                q.history.push(if count >= 6 {
+                    "Survey complete: 6 steles transcribed. Return to Rowan at Silverbridge Camp.".into()
+                } else {
+                    format!("Transcribed a carved stele ({count}/6 for Rowan’s survey).")
+                });
+            }
+        }
+        true
+    }
+
+    fn read_stele(&mut self, x: i32, y: i32, id: Option<&str>) -> Option<SessionEvent> {
+        let entry = crate::npcs::lore_entry(id?)?;
+        if !self.record_lore(entry.id) {
+            self.say("This stele is already transcribed in your survey notes.");
+            return Some(SessionEvent::None);
+        }
+        self.fx("pickup", x, y);
+        Some(self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Lore,
+            x,
+            y,
+            target_id: None,
+            title: entry.title.into(),
+            subtitle: "Carved Stele Inscription".into(),
+            body: entry.text.into(),
+            options: vec![opt("ok", "Close".into(), "primary", false)],
+        }))
+    }
+
+    /// Put a quest at (at least) `stage`, starting it if it was not begun.
+    fn bump_quest(&mut self, id: &str, stage: i32, log: &str, start: bool) {
+        match self.quests.get_mut(id) {
+            Some(q) if q.status == QuestStatus::Active => {
+                q.stage = q.stage.max(stage);
+                q.history.push(log.into());
+            }
+            None if start => {
+                self.quests.insert(
+                    id.into(),
+                    QuestProgress { id: id.into(), status: QuestStatus::Active, stage, outcome_label: None, history: vec![log.into()] },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn loot_cache(&mut self, x: i32, y: i32) {
+        self.mark_used(x, y);
+        self.fx("chest", x, y);
+        self.player.gold += 20;
+        let ledger = create_quest_item(&mut self.id_gen, "smuggler_ledger");
+        self.add_item_to_player(ledger);
+        self.bump_quest(
+            "shadows_beneath",
+            2,
+            "Recovered the Sealed Contraband Ledger on Floor 1. Choose whether to bring it to Vance or Vex.",
+            true,
+        );
+        self.say("Found Sealed Contraband Ledger! Return to Warden Vance or Vex in Oakhaven.");
+    }
+
+    fn gather_herb(&mut self, x: i32, y: i32) {
+        self.mark_used(x, y);
+        self.fx("pickup", x, y);
+        let herb = create_quest_item(&mut self.id_gen, "pale_nightbloom");
+        self.add_item_to_player(herb);
+        self.bump_quest("herbalist_blight", 2, "Gathered luminous Pale Nightbloom for Herbalist Mira.", false);
+        self.say("Harvested Pale Nightbloom! Bring it to Herbalist Mira in Oakhaven.");
+    }
+
+    /// The Bell is a one-time Floor 3 relic: anywhere else, or after its fate
+    /// is chosen, the tile is inert.
+    fn touch_bell(&mut self, x: i32, y: i32) -> SessionEvent {
+        let carried = self.player.inventory.iter().any(|i| i.quest_tag.as_deref() == Some("whispering_bell"));
+        if self.current != ZoneId::Dungeon(3) || self.flags.bell_choice.is_some() || carried {
+            self.mark_used(x, y);
+            self.say("A faint bell echo hums here — its power is already spent.");
+            return SessionEvent::None;
+        }
+        let arcana = self.player.attributes.arcana;
+        self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Bell,
+            x,
+            y,
+            target_id: None,
+            title: "The Whispering Bell".into(),
+            subtitle: "Ember Vaults · Floor 3 Relic".into(),
+            body: "A suspended bronze bell hums in deep resonance. You can carry it back to Highspire for Archivist Lyra or Magistrate Corvus—or use your Arcana to shatter it on the spot and absorb its cinder pulse.".into(),
+            options: vec![
+                opt("take_bell", "Unchain and take the Whispering Bell intact".into(), "primary", false),
+                opt(
+                    "shatter_bell",
+                    format!("[Arcana {arcana}/3] Shatter the Bell and absorb its Cinder Surge (+2 Attribute Pts)"),
+                    "danger",
+                    arcana < 3,
+                ),
+                opt("leave", "Leave it for now".into(), "secondary", false),
+            ],
+        })
+    }
+
+    fn resolve_bell(&mut self, x: i32, y: i32, option: &str) {
+        match option {
+            "take_bell" => {
+                self.mark_used(x, y);
+                self.fx("chest", x, y);
+                let bell = create_quest_item(&mut self.id_gen, "whispering_bell");
+                self.add_item_to_player(bell);
+                self.bump_quest("whispering_bell", 2, "Claimed the Whispering Bell intact on Floor 3.", true);
+                self.say("Claimed the Whispering Bell! Bring it to Lyra or Corvus in Highspire.");
+            }
+            "shatter_bell" => {
+                self.mark_used(x, y);
+                self.fx("frost_nova", x, y);
+                self.player.attribute_points += 2;
+                self.flags.bell_choice = Some("shattered_self".into());
+                let mut history = self.quests.get("whispering_bell").map(|q| q.history.clone()).unwrap_or_default();
+                history.push("Shattered the Whispering Bell on Floor 3 and absorbed +2 Attribute Points.".into());
+                self.quests.insert(
+                    "whispering_bell".into(),
+                    QuestProgress {
+                        id: "whispering_bell".into(),
+                        status: QuestStatus::Completed,
+                        stage: 3,
+                        outcome_label: Some("Shattered the Bell".into()),
+                        history,
+                    },
+                );
+                self.say("The Bell shatters! +2 Attribute Points surge into your veins.");
+            }
+            _ => {}
+        }
+    }
+
+    /// Gear the Forgotten Forge works on: the first worn piece, in TS order.
+    fn forge_target(&self) -> Option<(&'static str, &Item)> {
+        ["weapon", "armor", "ring", "amulet"]
+            .into_iter()
+            .find_map(|s| self.player.equipped.get(s).map(|i| (s, i)))
+    }
+
+    fn open_forge_prompt(&mut self, x: i32, y: i32) -> SessionEvent {
+        let might = self.player.attributes.might;
+        let gold = self.player.gold;
+        let free = might >= 3;
+        let mut options = vec![];
+        if let Some((_, item)) = self.forge_target() {
+            if item.upgrade_level < crate::pack::MAX_UPGRADE {
+                let price = if free { format!("[Might {might}/3 · Free]") } else { "30 Gold:".to_string() };
+                options.push(opt("temper_forge", format!("{price} Temper {} (+1 Upgrade)", item.name), "primary", !free && gold < 30));
+            }
+        }
+        options.push(opt("smelt_relic", "Smelt a Relic from Glowing Slag (35g -> Random Set Relic or Epic Gear)".into(), "secondary", gold < 35));
+        options.push(opt("harvest_embers", "Rake Cold Hearth for Gold (+20 Gold)".into(), "secondary", false));
+        options.push(opt("leave_forge", "Step away from the Anvil".into(), "secondary", false));
+        let depth = self.zone().depth;
+        self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Forge,
+            x,
+            y,
+            target_id: None,
+            title: "Forgotten Mithril Forge".into(),
+            subtitle: format!("Depth {depth} · Dwarven-Elven Foundry"),
+            body: "Warm coals still smolder beneath a soot-blackened anvil. Enough ember-heat remains for one masterwork tempering or relic smelt before the hearth cools.".into(),
+            options,
+        })
+    }
+
+    fn resolve_forge(&mut self, x: i32, y: i32, option: &str) {
+        let depth = self.zone().depth;
+        match option {
+            "temper_forge" => {
+                let Some((slot, item)) = self.forge_target().map(|(s, i)| (s, i.clone())) else { return };
+                if self.player.attributes.might < 3 {
+                    self.player.gold -= 30;
+                }
+                let up = crate::loot::upgrade_equipment_item(&item);
+                let name = up.name.clone();
+                self.player.equipped.insert(slot.into(), up);
+                self.settle_stats();
+                self.say(&format!("Forged in ancient coals: {name}!"));
+            }
+            "smelt_relic" => {
+                self.player.gold -= 35;
+                let item = if self.rng.next_f32() < 0.65 {
+                    create_random_set_relic(&mut self.id_gen, &mut self.rng, depth)
+                } else {
+                    self.epic_gear(depth + 1)
+                };
+                self.say(&format!("Smelted {} ({}) at the Forgotten Forge!", item.name, item.rarity.as_str()));
+                self.add_item_to_player(item);
+            }
+            "harvest_embers" => {
+                self.player.gold += 20;
+                self.say("Harvested +20 Gold from the Forgotten Forge.");
+            }
+            _ => return,
+        }
+        self.mark_used(x, y);
+        self.fx("brazier", x, y);
+        self.record_lore("lore_forge");
+    }
+
+    fn epic_gear(&mut self, depth: i32) -> Item {
+        generate_procedural_item(
+            &mut self.id_gen,
+            &mut self.rng,
+            depth,
+            ProceduralOptions { slot: None, min_rarity: Some(ItemRarity::Epic) },
+        )
+    }
+
+    fn altar_cost(&self) -> i32 {
+        let quarter = (f64::from(self.derived().max_hp) * 0.25).round() as i32;
+        quarter.min(self.player.hp - 1).max(1)
+    }
+
+    fn open_altar_prompt(&mut self, x: i32, y: i32) -> SessionEvent {
+        let cost = self.altar_cost();
+        let resolve = self.player.attributes.resolve;
+        let depth = self.zone().depth;
+        let hp = self.player.hp;
+        self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Altar,
+            x,
+            y,
+            target_id: None,
+            title: "Occult Blood Altar".into(),
+            subtitle: format!("Depth {depth} · Forbidden Pact"),
+            body: "Dark obsidian bowls drink stray lantern light. A relic lies suspended in a crimson sigil—offering blood buys power, while steady resolve can purify the stone.".into(),
+            options: vec![
+                opt("blood_pact", format!("Offer {cost} HP (25% Max) for a Set Relic/Epic Gear & +25 Gold"), "danger", hp <= 2),
+                opt("purify_altar", format!("[Resolve {resolve}/3] Purify the Altar (Full Heal, +45 XP, +20 Gold)"), "primary", resolve < 3),
+                opt("leave_altar", "Back away from the Altar".into(), "secondary", false),
+            ],
+        })
+    }
+
+    fn resolve_altar(&mut self, x: i32, y: i32, option: &str) -> SessionEvent {
+        let mut event = SessionEvent::None;
+        match option {
+            "blood_pact" => {
+                let cost = self.altar_cost();
+                let depth = self.zone().depth;
+                self.player.hp = (self.player.hp - cost).max(1);
+                self.player.gold += 25;
+                let reward = if self.rng.next_f32() < 0.7 {
+                    create_random_set_relic(&mut self.id_gen, &mut self.rng, depth)
+                } else {
+                    self.epic_gear(depth + 1)
+                };
+                self.say(&format!("Blood pact sealed: gained {} & +25 Gold!", reward.name));
+                self.add_item_to_player(reward);
+            }
+            "purify_altar" => {
+                let d = self.derived();
+                self.player.hp = d.max_hp;
+                self.player.mana = d.max_mana;
+                self.player.statuses.clear();
+                self.player.gold += 20;
+                event = self.gain_xp(45);
+                self.say("You purified the Occult Altar! Full recovery, +45 XP, and +20 Gold.");
+            }
+            _ => return SessionEvent::None,
+        }
+        self.mark_used(x, y);
+        self.fx("waystone", x, y);
+        self.record_lore("lore_altar");
+        event
+    }
+
+    fn open_shrine_prompt(&mut self, x: i32, y: i32, spent: bool) -> SessionEvent {
+        let mut options = vec![];
+        if !spent {
+            options.push(opt("heal", "Commune for Full HP & Mana Restoration (Once per Shrine)".into(), "primary", false));
+        }
+        options.push(opt("respec", "Reset All Attributes & Skills for Fresh Build (Free at Shrine)".into(), "secondary", false));
+        options.push(opt("close", "Step away".into(), "secondary", false));
+        self.set_prompt(SpecialPrompt {
+            kind: PromptKind::Shrine,
+            x,
+            y,
+            target_id: None,
+            title: "Glyph Shrine of Renewal".into(),
+            subtitle: "Restorative & Build Respec Altar".into(),
+            body: if spent {
+                "The altar’s renewal has been spent — its runes glow only faintly now. You may still clear your learned attributes and skills to test an entirely new build.".into()
+            } else {
+                "Ancient runes hum around this stone altar. You may restore your vigor (once — the renewal does not return) or clear your learned attributes and skills to test an entirely new build.".into()
+            },
+            options,
+        })
+    }
+
+    fn resolve_shrine(&mut self, x: i32, y: i32, option: &str) {
+        match option {
+            "heal" => {
+                let d = self.derived();
+                self.player.hp = d.max_hp;
+                self.player.mana = d.max_mana;
+                self.player.statuses.clear();
+                self.mark_used(x, y);
+                self.fx("brazier", x, y);
+                self.say("The shrine's renewal floods through you.");
+            }
+            "respec" => {
+                let preset = crate::skills::get_starter_preset(self.player.starter_class);
+                let back = crate::skills::compute_respec_points(self.player.level, &self.flags, &self.quests);
+                let p = &mut self.player;
+                p.attributes = preset.attributes;
+                p.skills.clear();
+                p.hotbar = vec![None; 5];
+                p.attribute_points = back.attribute_points;
+                p.skill_points = back.skill_points;
+                // Capstones are bought with skill points, so a refund takes them back too.
+                p.prodigies = Some(vec![]);
+                self.cancel_aim();
+                let d = self.derived();
+                let p = &mut self.player;
+                p.max_hp = d.max_hp;
+                p.hp = d.max_hp;
+                p.max_mana = d.max_mana;
+                p.mana = d.max_mana;
+                self.fx("level_up", x, y);
+                self.say("Attributes and Skills refunded! Open Skills [K] to build anew.");
+            }
+            _ => {}
+        }
+    }
+
+    /// Traps and biome hazards underfoot (TS attemptStep). One use each.
+    pub(crate) fn trigger_hazard(&mut self, x: i32, y: i32, kind: TileKind) {
+        {
+            let Some(t) = self.tile_mut(x, y) else { return };
+            if t.used == Some(true) {
+                return;
+            }
+            t.used = Some(true);
+            t.revealed = Some(true);
+        }
+        self.tile_rev += 1;
+        let a = self.player.attributes;
+        let depth = self.zone().depth;
+        let dodged = match kind {
+            TileKind::Trap | TileKind::SporePool => a.agility >= 3,
+            TileKind::DartTrap => a.agility >= 4,
+            TileKind::FrostVent => a.agility >= 3 || a.resolve >= 3,
+            TileKind::EmberCrust => a.resolve >= 3,
+            TileKind::ShockRune => a.arcana >= 3,
+            _ => return,
+        };
+        if dodged {
+            let (gold, line) = match kind {
+                TileKind::Trap => (0, "Your agility spotted and disarmed a spike snare!"),
+                TileKind::DartTrap => (0, "Your agility spotted the dart slits and jammed the Venom Dart Snare!"),
+                TileKind::SporePool => (6, "Deftly skirted the spore pool and harvested +6 Gold."),
+                TileKind::FrostVent => (6, "Navigated the rime vent cleanly and recovered +6 Gold."),
+                TileKind::EmberCrust => (8, "Endured the ember crust and quenched +8 Gold."),
+                _ => (8, "Your Arcana siphoned the shock rune (+6 Mana, +8 Gold)!"),
+            };
+            self.player.gold += gold;
+            if kind == TileKind::ShockRune {
+                let max = self.derived().max_mana;
+                self.player.mana = max.min(self.player.mana + 6);
+            }
+            self.fx("pickup", x, y);
+            self.say(line);
+            return;
+        }
+        let (dmg, status, line) = match kind {
+            TileKind::Trap => (5 + depth * 2, None, "Stepped on a hidden snare"),
+            TileKind::DartTrap => (4 + depth * 2, Some((StatusKind::Poison, 3, 3)), "Venom darts hiss from the wall"),
+            TileKind::SporePool => (3 + depth, Some((StatusKind::Poison, 3, 3)), "Miasma spores burst"),
+            TileKind::FrostVent => (3 + depth, Some((StatusKind::Chilled, 2, 1)), "A frost vent erupts"),
+            TileKind::EmberCrust => (4 + depth, Some((StatusKind::Burn, 2, 3)), "Scorching ember crust cracks"),
+            _ => (4 + depth, None, "An arcane shock rune discharges"),
+        };
+        self.player.hp -= dmg;
+        if let Some((k, turns, potency)) = status {
+            apply_status(&mut self.player.statuses, k, turns, potency);
+        }
+        if kind == TileKind::ShockRune {
+            self.player.mana -= self.player.mana.min(4);
+        }
+        self.fx("player_hit", x, y);
+        self.say(&match status {
+            Some((k, turns, _)) => format!("{line} for {dmg} dmg and {} ({turns}t)!", k.as_str()),
+            None => format!("{line} for {dmg} dmg!"),
+        });
+    }
+
     // ------------------------------------------------------------ prompt API
 
     /// Current prompt as JSON, or `null` when none is open.
@@ -757,6 +1190,19 @@ impl GameSession {
             }
             (PromptKind::Waystone, "surge_waystone") => {
                 self.attune_waystone(prompt.x, prompt.y, true);
+                SessionEvent::None
+            }
+            (PromptKind::Bell, id) => {
+                self.resolve_bell(prompt.x, prompt.y, id);
+                SessionEvent::None
+            }
+            (PromptKind::Forge, id) => {
+                self.resolve_forge(prompt.x, prompt.y, id);
+                SessionEvent::None
+            }
+            (PromptKind::Altar, id) => self.resolve_altar(prompt.x, prompt.y, id),
+            (PromptKind::Shrine, id) => {
+                self.resolve_shrine(prompt.x, prompt.y, id);
                 SessionEvent::None
             }
             (PromptKind::BossConfrontation, _) => {

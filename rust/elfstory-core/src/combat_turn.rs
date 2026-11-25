@@ -127,7 +127,7 @@ impl GameSession {
 
     /// Reward every enemy at 0 HP (handleEnemyDeath) and take it off the
     /// board. Returns the most notable event (a level-up).
-    fn reap_dead(&mut self) -> SessionEvent {
+    pub(crate) fn reap_dead(&mut self) -> SessionEvent {
         let mut event = SessionEvent::None;
         while let Some(idx) = self.zone().enemies.iter().position(|e| e.hp <= 0) {
             let ev = self.on_enemy_killed(idx);
