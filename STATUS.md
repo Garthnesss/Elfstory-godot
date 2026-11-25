@@ -411,3 +411,8 @@ and glTF inspection rather than assumed:
   - `godot/Main.gd`: `const ENABLE_TOWN_REBUILD_UI := false` hides `town_panel`, `build_lot_markers()`, and `procedural://cold_forge_ruin` (Torin's lit `blacksmith.glb` renders from turn 1).
   - `rust/elfstory-core/src/town.rs` & `rust/elfstory-core/src/town_layout.rs`: Blacksmith rebuild pieces, Heartcoal stall, 3 lots, ActRaiser tier growth, and regional supplies remain compiled and unit-tested.
   - `rust/elfstory-core/src/session.rs`: `complete_blacksmith`, `relocate_blacksmith`, and `return_to_oakhaven` banking/ticking remain intact.
+
+## Town NPCs Highspire batch 2 — Orin & Page Tomas SHIPPED (Highspire 5/5 Complete, Nov 24, 2026)
+- **Relic Appraiser Orin (`orin`, Highspire `(21, 11)`) SHIPPED:** `fig_npc_orin_ds_s22.png` → `fig_npc_orin.glb` (2.1 MB, 44,999 tris, UV-preserving `--cut-z 0.111`, `FIGURE_HEIGHT` 1.26; watertight `7672/855/3`).
+- **Page Tomas (`tomas`, Highspire `(10, 8)`) SHIPPED:** `fig_npc_tomas_ds_s22.png` → `fig_npc_tomas.glb` (2.0 MB, 44,999 tris, UV-preserving, `FIGURE_HEIGHT` 1.18; watertight `9525/421/1`).
+- **Gate pack:** `docs/asset-gate/npcs-highspire-batch2-2026-11-24/README.md`. **Highspire NPC coverage is now 5/5 (zero capsules left).** Verified: `cargo test` 111/111, `godot_verify.sh godot` (`ALL GREEN`).
