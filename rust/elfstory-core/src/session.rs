@@ -407,7 +407,7 @@ impl GameSession {
             }
             if let Some(item) = loot.item {
                 self.say(&format!("Picked up {}.", item.name));
-                self.player.inventory.push(item);
+                self.add_item_to_player(item);
             }
             if !self.in_town() {
                 self.delve_progress += 1;
@@ -420,9 +420,29 @@ impl GameSession {
             // TS auto-triggers these when stepped onto. A handled chest or
             // brazier, and any unattuned waystone, ends the step without an
             // enemy turn; an already-used one is just floor.
-            TileKind::Chest | TileKind::Brazier | TileKind::Waystone => {
+            TileKind::Chest
+            | TileKind::Brazier
+            | TileKind::Waystone
+            | TileKind::LoreTablet
+            | TileKind::ContrabandCache
+            | TileKind::HerbNode
+            | TileKind::WhisperingBell
+            | TileKind::ForgottenForge
+            | TileKind::CursedAltar => {
                 if let Some(ev) = self.interact_with_world_tile(px, py) {
                     return ev;
+                }
+            }
+            TileKind::Trap
+            | TileKind::DartTrap
+            | TileKind::SporePool
+            | TileKind::FrostVent
+            | TileKind::EmberCrust
+            | TileKind::ShockRune => {
+                self.trigger_hazard(px, py, kind);
+                let max_hp = self.derived().max_hp;
+                if self.check_player_fatal(max_hp) {
+                    return self.wake_in_oakhaven();
                 }
             }
             _ => {}
@@ -497,18 +517,8 @@ impl GameSession {
         // XP with difficulty scaling + level-ups (TS curve: xpToNext x1.48).
         let xp = crate::difficulty::scale_xp_for_difficulty(enemy.xp_reward, self.tier, self.cycle);
         let event = self.gain_xp(xp);
-        // Kill drop (first-gear guarantee honoured via loot rules).
-        let first = self.flags.first_gear_dropped == Some(true);
-        let depth = self.zone().depth;
-        let level = self.player.level;
-        if let Some(drop) =
-            crate::loot::generate_kill_drop(&mut self.id_gen, &mut self.rng, depth, level, first)
-        {
-            if drop.category == ItemCategory::Equipment {
-                self.flags.first_gear_dropped = Some(true);
-            }
-            let seq = self.seq;
-            self.seq += 1;
+        for drop in self.roll_kill_drops(&enemy) {
+            let seq = self.next_seq();
             self.zone_mut().loot.push(GroundLoot {
                 id: format!("drop_{seq}"),
                 x: enemy.x,
@@ -517,7 +527,189 @@ impl GameSession {
                 item: Some(drop),
             });
         }
+        self.claim_boss_trophy(&enemy);
         event
+    }
+
+    /// TS handleEnemyDeath drop table: wardens and bosses pay premium loot,
+    /// ordinary kills roll, and a young hero's first kill always drops gear.
+    fn roll_kill_drops(&mut self, enemy: &Enemy) -> Vec<Item> {
+        use crate::loot::{create_random_set_relic, generate_kill_drop, generate_procedural_item, ProceduralOptions};
+        let depth = self.zone().depth;
+        let premium = |gen: &mut ItemIdGen, rng: &mut Rng, d: i32, min: ItemRarity| {
+            generate_procedural_item(gen, rng, d, ProceduralOptions { slot: None, min_rarity: Some(min) })
+        };
+        let (gen, rng) = (&mut self.id_gen, &mut self.rng);
+        match enemy.rank {
+            Some(EnemyRank::Randboss) => {
+                let first = if rng.next_f32() < 0.4 {
+                    create_random_set_relic(gen, rng, depth)
+                } else {
+                    premium(gen, rng, depth + 1, ItemRarity::Epic)
+                };
+                return vec![first, premium(gen, rng, depth, ItemRarity::Rare)];
+            }
+            Some(EnemyRank::Rare) => return vec![premium(gen, rng, depth + 1, ItemRarity::Rare)],
+            _ => {}
+        }
+        if enemy.is_boss == Some(true) {
+            return vec![if rng.next_f32() < 0.35 {
+                create_random_set_relic(gen, rng, depth)
+            } else {
+                premium(gen, rng, depth, ItemRarity::Epic)
+            }];
+        }
+        if enemy.is_elite == Some(true) {
+            return vec![premium(gen, rng, depth, ItemRarity::Rare)];
+        }
+        let first_done = self.flags.first_gear_dropped == Some(true);
+        let guaranteed = crate::loot::is_first_gear_guaranteed(self.player.level, first_done);
+        match generate_kill_drop(gen, rng, depth, self.player.level, first_done) {
+            None => vec![],
+            Some(gear) => {
+                if guaranteed {
+                    self.flags.first_gear_dropped = Some(true);
+                    vec![gear]
+                } else if self.rng.next_f32() < 0.18 {
+                    let kind = if self.rng.next_f32() < 0.6 { ConsumableKind::HealPotion } else { ConsumableKind::ManaPotion };
+                    vec![create_consumable(&mut self.id_gen, kind, 1)]
+                } else {
+                    vec![gear]
+                }
+            }
+        }
+    }
+
+    /// Side bosses yield the trophy their quest asks for; Malakor ends the story.
+    fn claim_boss_trophy(&mut self, enemy: &Enemy) {
+        let (quest, tag, log, line) = match enemy.id.as_str() {
+            "boss_morvath" => {
+                self.flags.barrow_boss_defeated = Some(true);
+                ("barrow_purge", "morvath_seal", "Slew Arch-Wight Morvath and claimed Morvath’s Barrow Seal.",
+                 "Obtained Morvath’s Barrow Seal! Return to Captain Darek in Cinderwatch Bastion.")
+            }
+            "boss_vexis" => {
+                self.flags.mire_boss_defeated = Some(true);
+                ("spores_of_bog", "fungal_heart", "Slew Spore-Matron Vexis and harvested the Bioluminescent Fungal Heart.",
+                 "Harvested Bioluminescent Fungal Heart! Deliver it to Elder Sylva in Thornwick Fen.")
+            }
+            "boss_kaelthar" => {
+                self.flags.frost_boss_defeated = Some(true);
+                ("cinder_and_frost", "ashen_ore_heart", "Slew Ignis-Warden Kaelthar and tore free the Ashen Ore Heart.",
+                 "Recovered Ashen Ore Heart! Bring it to Forgemistress Halda in Cinderwatch Bastion.")
+            }
+            _ => {
+                if enemy.archetype == EnemyArchetype::BossMalakor && !enemy.name.starts_with("Abyssal Echo") {
+                    let mut history = self.quests.get("sovereign_cinder").map(|q| q.history.clone()).unwrap_or_default();
+                    history.push("Shattered Malakor, Sovereign of Cinder, on Floor 5.".into());
+                    self.quests.insert(
+                        "sovereign_cinder".into(),
+                        QuestProgress {
+                            id: "sovereign_cinder".into(),
+                            status: QuestStatus::Completed,
+                            stage: 2,
+                            outcome_label: Some("Malakor Vanquished".into()),
+                            history,
+                        },
+                    );
+                }
+                return;
+            }
+        };
+        let trophy = crate::loot::create_quest_item(&mut self.id_gen, tag);
+        self.add_item_to_player(trophy);
+        if let Some(q) = self.quests.get_mut(quest) {
+            if q.status == QuestStatus::Active {
+                q.stage = q.stage.max(2);
+                q.history.push(log.into());
+            }
+        }
+        self.say(line);
+    }
+
+    /// True from Malakor's fall until the ending has been shown once.
+    pub fn ending_pending(&self) -> bool {
+        self.flags.malakor_defeated == Some(true) && self.extra_flags.get("endingSeen") != Some(&Value::Bool(true))
+    }
+
+    pub fn acknowledge_ending(&mut self) {
+        self.extra_flags.insert("endingSeen".into(), Value::Bool(true));
+    }
+
+    /// TS EndingScreen: the epilogue reflects the run's choices.
+    pub fn ending_json(&self) -> Value {
+        let f = &self.flags;
+        let mut lines = vec!["With Malakor unmade, the cinder-throne cools for the first time in an age. The Ember Blight gutters out. Somewhere far above, Oakhaven feels the change, looks around, and reluctantly concludes that Garth did it."];
+        match f.bell_choice.as_deref() {
+            Some("attuned_lyra") => lines.push("In Highspire, Archivist Lyra rings the attuned Whispering Bell once at dawn. Its note carries over the Vale: a ward renewed, a promise kept. She files your name under “Heroes (Unexpected).”"),
+            Some("sold_corvus") => lines.push("The Whispering Bell hangs silent in Magistrate Corvus’s vault. What he paid for it buys roads, roofs, and quiet. He sends you an invoice for the paperwork anyway."),
+            Some("shattered_self") => lines.push("The Bell you shattered sings on inside you — a low cinder-hum beneath your heartbeat. You tell everyone it is the sound of destiny. It is mostly indigestion."),
+            _ => {}
+        }
+        match f.caravan_choice.as_deref() {
+            Some("arrested_vex") => lines.push("The Contraband Ledger, delivered to Warden Vance, closes the smuggler roads beneath Oakhaven. Vance shakes your hand, which he has never done, and immediately regrets it, which he has always done."),
+            Some("smuggler_pact") => lines.push("Your shadow pact with Vex the Quiet holds: certain doors in Oakhaven will never close to you again. Vex still won’t say your name out loud. Nobody can say it with a straight face."),
+            _ => {}
+        }
+        match f.blight_choice.as_deref() {
+            Some("cantor_appeased") => lines.push("Vaelen, the Bone Cantor, was laid to rest by words rather than steel. His last request was that you never sing. You have honoured it, mostly."),
+            Some("herbs_gathered") => lines.push("Mira’s apothecary, restocked with Pale Nightbloom, tends the blight-sick of Oakhaven back to health. She names a wart cream after you. It sells well."),
+            _ => {}
+        }
+        if f.malakor_weakened == Some(true) {
+            lines.push("Those who study such things will note the Sovereign’s ward was broken before the final descent — and that you broke it. You will mention this at every dinner for the rest of your life.");
+        }
+        lines.push("But the stair below Floor 5 does not end. The Endless Abyss waits with its lanterns lit. The town would very much like you to go down there for a while.");
+        json!({
+            "lines": lines, "level": self.player.level, "kills": self.player.kills,
+            "turns": self.player.turns_elapsed, "gold": self.player.gold, "cycle": self.cycle,
+            "quests": self.quests.values().filter(|q| q.status == QuestStatus::Completed).count(),
+        })
+    }
+
+    /// New Game+: the Vale is remade one cycle harder; the hero, gear and
+    /// town are kept. Only after the ending.
+    pub fn ascend(&mut self) -> bool {
+        if self.flags.malakor_defeated != Some(true) {
+            return false;
+        }
+        let seed = (self.rng.next_f32() * 4_000_000_000.0) as u32;
+        let fresh = Self::new_game(&self.player.name, self.player.starter_class, seed);
+        let mut next = fresh;
+        next.tier = self.tier;
+        next.cycle = self.cycle + 1;
+        next.town = self.town.clone();
+        next.id_gen = ItemIdGen::with_counter(self.id_gen.counter());
+        let (x, y) = (next.player.x, next.player.y);
+        next.player = self.player.clone();
+        let p = &mut next.player;
+        p.x = x;
+        p.y = y;
+        // Last cycle's story items would finish this cycle's quests on turn one.
+        p.inventory.retain(|i| i.category != ItemCategory::Quest);
+        p.statuses.clear();
+        p.cooldowns.clear();
+        p.prodigy_cooldowns = Some(HashMap::new());
+        p.haste_steps = Some(0);
+        p.kills = 0;
+        p.turns_elapsed = 0;
+        p.first_strike_ready = true;
+        next.place_companion_on_entry(true);
+        if next.town.blacksmith_complete {
+            let stock = crate::npcs::create_merchant_stock(&mut next.id_gen, &mut next.rng, "blacksmith", Some(&next.town));
+            next.merchant_stocks.insert("blacksmith".into(), stock);
+        }
+        let d = next.derived();
+        next.player.max_hp = d.max_hp;
+        next.player.hp = d.max_hp;
+        next.player.max_mana = d.max_mana;
+        next.player.mana = d.max_mana;
+        next.tile_rev = self.tile_rev + 1;
+        next.settle_town();
+        next.refresh_visibility();
+        next.say(&format!("The Ashen Glyph turns once more. You ascend to Cycle {}: the Vale is remade, its foes hardened, and everything earned is carried into the new descent.", next.cycle));
+        *self = next;
+        true
     }
 
     fn transition_down(&mut self) -> SessionEvent {
@@ -670,6 +862,7 @@ impl GameSession {
         self.player.max_mana = d.max_mana;
         self.player.mana = d.max_mana;
         self.fx.clear();
+        self.settle_town();
     }
 
     fn place_companion_on_entry(&mut self, heal: bool) {
@@ -792,6 +985,7 @@ impl GameSession {
         self.player.x = spawn.x;
         self.player.y = spawn.y;
         self.place_companion_on_entry(true);
+        self.settle_town();
         if next_tier > prev_tier {
             let d = self.derived();
             self.player.max_hp = d.max_hp;
@@ -874,6 +1068,11 @@ impl GameSession {
         {
             return SessionEvent::OpenMerchant("blacksmith".into());
         }
+        if self.current == ZoneId::Oakhaven {
+            if let Some(lot) = crate::town_layout::lot_beside(px, py) {
+                return self.open_lot_prompt(lot);
+            }
+        }
         // TS handleInteractAction: the tile underfoot, then the 8 around.
         if let Some(ev) = self.interact_with_world_tile(px, py) {
             return ev;
@@ -927,6 +1126,7 @@ impl GameSession {
                 let (px, py) = (self.player.x, self.player.y);
                 self.fx("town_tier_up", px, py);
             }
+            self.settle_town();
         }
         result.completed
     }
@@ -947,8 +1147,118 @@ impl GameSession {
             } else {
                 self.say(&format!("Relocated the rebuilt Blacksmith to the {}.", anchor.label));
             }
+            self.settle_town();
         }
         changed
+    }
+
+    /// Make the town's walkable ground match what stands on it, and move anyone
+    /// caught where a wall went up. Safe to call any time.
+    pub(crate) fn settle_town(&mut self) {
+        let key = ZoneId::Oakhaven.to_string_id();
+        let solid = crate::town_layout::building_footprints(&self.town);
+        let base = create_oakhaven_map();
+        let in_town = self.current == ZoneId::Oakhaven;
+        let Some(zone) = self.zones.get_mut(&key) else { return };
+        let mut changed = false;
+        for (row, base_row) in zone.tiles.iter_mut().zip(&base.tiles) {
+            for (t, b) in row.iter_mut().zip(base_row) {
+                let open = b.walkable && !solid.iter().any(|f| f.contains(t.x, t.y));
+                changed |= t.walkable != open;
+                t.walkable = open;
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.tile_rev += 1;
+        let free = |zone: &ZoneMap, x: i32, y: i32, taken: &[(i32, i32)]| -> (i32, i32) {
+            let ok = |x: i32, y: i32| {
+                zone.tiles.get(y as usize).and_then(|r| r.get(x as usize)).is_some_and(|t| t.walkable && t.kind != TileKind::StairsDown)
+                    && !taken.contains(&(x, y))
+            };
+            if ok(x, y) {
+                return (x, y);
+            }
+            for r in 1..12i32 {
+                for oy in -r..=r {
+                    for ox in -r..=r {
+                        if (ox.abs() == r || oy.abs() == r) && ok(x + ox, y + oy) {
+                            return (x + ox, y + oy);
+                        }
+                    }
+                }
+            }
+            (zone.spawn_point.x, zone.spawn_point.y)
+        };
+        let mut taken: Vec<(i32, i32)> = vec![];
+        if in_town {
+            let (x, y) = free(zone, self.player.x, self.player.y, &taken);
+            self.player.x = x;
+            self.player.y = y;
+            taken.push((x, y));
+        }
+        for i in 0..zone.npcs.len() {
+            let at = free(zone, zone.npcs[i].x, zone.npcs[i].y, &taken);
+            zone.npcs[i].x = at.0;
+            zone.npcs[i].y = at.1;
+            taken.push(at);
+        }
+        for i in 0..zone.critters.as_ref().map_or(0, Vec::len) {
+            let (x, y) = zone.critters.as_ref().map_or((0, 0), |c| (c[i].x, c[i].y));
+            let at = free(zone, x, y, &taken);
+            if let Some(c) = zone.critters.as_mut() {
+                c[i].x = at.0;
+                c[i].y = at.1;
+            }
+            taken.push(at);
+        }
+        for i in 0..zone.loot.len() {
+            let at = free(zone, zone.loot[i].x, zone.loot[i].y, &[]);
+            zone.loot[i].x = at.0;
+            zone.loot[i].y = at.1;
+        }
+        if in_town {
+            let pos = crate::combat_turn::place_companion_near(self.zone(), self.player.x, self.player.y);
+            if let Some(c) = self.player.companion.as_mut() {
+                c.x = pos.x;
+                c.y = pos.y;
+            }
+            self.refresh_visibility();
+        }
+    }
+
+    /// What the town screen and the lot stakes show.
+    pub fn town_json(&self) -> Value {
+        let t = &self.town;
+        let pieces: Vec<Value> = crate::town::BLACKSMITH_PIECES
+            .iter()
+            .map(|p| json!({ "tag": p.tag, "name": p.name, "found": t.pieces_found.iter().any(|f| f == p.tag) }))
+            .collect();
+        let supplies: Vec<Value> = crate::town::TOWN_SUPPLIES
+            .iter()
+            .map(|s| json!({ "name": s.name, "unlocks": s.unlock_item_name, "found": t.supplies_found.iter().any(|f| f == &s.tag) }))
+            .collect();
+        let lots: Vec<Value> = crate::town_layout::oakhaven_lot_anchors()
+            .iter()
+            .map(|a| {
+                let f = a.hide_terrain_footprint;
+                json!({
+                    "id": a.lot.as_str(), "label": a.label, "x": a.x, "z": a.z,
+                    "w": f.max_x - f.min_x + 1, "d": f.max_z - f.min_z + 1,
+                    "wish": a.lot == BlacksmithLot::Pondside,
+                    "current": t.blacksmith_complete && t.blacksmith_lot == Some(a.lot),
+                })
+            })
+            .collect();
+        json!({
+            "pieces": pieces, "supplies": supplies, "lots": lots,
+            "heartcoal": t.stall_item_found, "population": t.population, "returns": t.returns,
+            "tier": crate::town::population_tier(t),
+            "bonuses": crate::town::get_town_tier_bonuses(Some(t)),
+            "complete": t.blacksmith_complete, "canBuild": self.can_complete_blacksmith(),
+            "wishClaimed": t.wish_bonus_claimed,
+        })
     }
 
     /// TS merchant resolution: once the Blacksmith is rebuilt, Torin's
@@ -982,7 +1292,14 @@ impl GameSession {
             return Err("Not enough gold.".into());
         }
         self.player.gold -= item.value;
-        self.player.inventory.push(item.clone());
+        // One of each: the shelf used to refill itself for free.
+        let shelf = self.resolve_merchant(merchant_id);
+        if let Some(stock) = self.merchant_stocks.get_mut(&shelf) {
+            if index < stock.len() {
+                stock.remove(index);
+            }
+        }
+        self.add_item_to_player(item.clone());
         self.say(&format!("Bought {}.", item.name));
         Ok(item)
     }
@@ -1462,8 +1779,8 @@ impl GameSession {
         let has_bell = self.has_quest_item("whispering_bell");
         let has_satchel = self.has_quest_item("wayfarer_satchel");
         let has_bog_heart = self.has_quest_item("fungal_heart");
-        let has_barrow_seal = self.has_quest_item("barrow_seal");
-        let has_caldera_heart = self.has_quest_item("caldera_heart");
+        let has_barrow_seal = self.has_quest_item("morvath_seal");
+        let has_caldera_heart = self.has_quest_item("ashen_ore_heart");
 
         let is_active = |id: &str| crate::npcs::is_quest_active(&self.quests, id);
         let not_started = |id: &str| !self.quests.contains_key(id);
@@ -1605,14 +1922,14 @@ impl GameSession {
                     }
                 }
                 "barrow_purge" => {
-                    if self.has_quest_item("barrow_seal") {
+                    if self.has_quest_item("morvath_seal") {
                         ("turnin", "Captain Darek", "Return Barrow Seal to Cinderwatch".into())
                     } else {
                         ("active", "Whispering Barrow", "Slay Arch-Wight Morvath in Whispering Barrow".into())
                     }
                 }
                 "cinder_and_frost" => {
-                    if self.has_quest_item("caldera_heart") {
+                    if self.has_quest_item("ashen_ore_heart") {
                         ("turnin", "Forgemistress Halda", "Return Ashen Ore Heart to Cinderwatch".into())
                     } else {
                         ("active", "Frostpeak Cavern", "Slay Ignis-Warden Kaelthar in Frostpeak".into())
@@ -1676,14 +1993,40 @@ impl GameSession {
         Value::Array(items)
     }
 
+    /// `state_json` without the terrain when the caller already has this
+    /// zone at this revision. Terrain is most of the snapshot and changes
+    /// on a few actions in a hundred.
+    pub fn snapshot_json(&self, known_zone: &str, known_rev: u32) -> Value {
+        let mut v = self.state_json();
+        if known_zone == self.current.to_string_id() && known_rev == self.tile_rev {
+            if let Some(z) = v.get_mut("zone").and_then(Value::as_object_mut) {
+                z.remove("tiles");
+                z.remove("usedTiles");
+            }
+        }
+        v
+    }
+
     /// JSON snapshot for the Godot front-end.
     pub fn state_json(&self) -> Value {
         let zone = self.zone();
         let tiles: Vec<Vec<String>> = zone
             .tiles
             .iter()
-            .map(|row| row.iter().map(|t| t.kind.as_str().to_string()).collect())
+            .map(|row| row.iter().map(|t| shown_kind(t).to_string()).collect())
             .collect();
+        // Per tile: 0 never seen, 1 remembered, 2 in sight now.
+        let sight: Vec<String> = zone
+            .tiles
+            .iter()
+            .map(|row| row.iter().map(|t| if t.visible { '2' } else if t.explored { '1' } else { '0' }).collect())
+            .collect();
+        let seen = |x: i32, y: i32, need_now: bool| {
+            zone.tiles
+                .get(y as usize)
+                .and_then(|r| r.get(x as usize))
+                .is_some_and(|t| t.visible || (!need_now && t.explored))
+        };
         let critters: Vec<Value> = zone
             .critters
             .as_deref()
@@ -1696,6 +2039,7 @@ impl GameSession {
                     "name": c.name,
                     "x": c.x,
                     "y": c.y,
+                    "visible": seen(c.x, c.y, true),
                 })
             })
             .collect();
@@ -1708,6 +2052,7 @@ impl GameSession {
                 "width": zone.width,
                 "height": zone.height,
                 "tiles": tiles,
+                "sight": sight,
                 "tileRev": self.tile_rev,
                 "usedTiles": self.used_tiles(),
                 "enemies": zone.enemies.iter().filter(|e| e.hp > 0).map(|e| json!({
@@ -1715,6 +2060,7 @@ impl GameSession {
                     "archetype": e.archetype.as_str(),
                     "hp": e.hp, "maxHp": e.max_hp, "isBoss": e.is_boss.unwrap_or(false),
                     "alerted": e.alerted,
+                    "visible": seen(e.x, e.y, true),
                     "statuses": e.statuses.iter().map(|st| json!({
                         "kind": st.kind.as_str(), "turns": st.turns, "potency": st.potency,
                     })).collect::<Vec<_>>(),
@@ -1724,10 +2070,11 @@ impl GameSession {
                 })).collect::<Vec<_>>(),
                 "npcs": zone.npcs.iter().map(|n| json!({
                     "id": n.id, "name": n.name, "title": n.title, "glyph": n.glyph, "x": n.x, "y": n.y,
+                    "visible": seen(n.x, n.y, false),
                 })).collect::<Vec<_>>(),
                 "critters": critters,
                 "loot": zone.loot.iter().map(|l| json!({
-                    "x": l.x, "y": l.y, "gold": l.gold,
+                    "x": l.x, "y": l.y, "gold": l.gold, "visible": seen(l.x, l.y, false),
                     "itemName": l.item.as_ref().map(|i| i.name.clone()),
                 })).collect::<Vec<_>>(),
             },
@@ -1737,16 +2084,29 @@ impl GameSession {
             "populationTier": crate::town::population_tier(&self.town),
             "townTierBonuses": crate::town::get_town_tier_bonuses(Some(&self.town)),
             "canCompleteBlacksmith": self.can_complete_blacksmith(),
+            "townBoard": self.town_json(),
             "quests": serde_json::to_value(&self.quests).unwrap_or(Value::Null),
             "questTracker": self.quest_tracker_json(),
             "npcMarkers": self.npc_markers_json(),
             "carriedTownTags": self.carried_town_tags(),
+            "endingPending": self.ending_pending(),
+            "storyFinished": self.flags.malakor_defeated == Some(true),
+            "cycle": self.cycle,
+            "difficulty": crate::difficulty::difficulty_info(self.tier).0,
             "prompt": self.active_prompt.as_ref().map(|p| p.kind.as_str()),
             "hotbar": self.hotbar_json(),
             "armedSkill": self.armed_skill.map(|k| k.as_str()),
             "aimedTarget": self.aimed_target,
             "log": self.log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
         })
+    }
+}
+
+/// What the player sees: an unsprung, unspotted trap looks like floor.
+fn shown_kind(t: &Tile) -> &'static str {
+    match t.kind {
+        TileKind::Trap | TileKind::DartTrap if t.revealed != Some(true) => TileKind::Floor.as_str(),
+        k => k.as_str(),
     }
 }
 
@@ -1934,10 +2294,333 @@ mod tests {
             s.choose_dialogue("trade"),
             SessionEvent::OpenMerchant("torin".to_string())
         );
+        // Torin sells the rebuilt shop's shelf, and the blade bought above is
+        // off it: one of each, as in the web game.
         let resolved = s.merchant_stock("torin");
-        assert!(resolved
-            .iter()
-            .any(|i| i.name == BLACKSMITH_GATED_ITEM_NAME));
+        assert!(!resolved.is_empty());
+        assert_eq!(resolved, s.merchant_stock("blacksmith"));
+        assert!(!resolved.iter().any(|i| i.name == BLACKSMITH_GATED_ITEM_NAME));
+    }
+
+    fn slay(s: &mut GameSession, id: &str, archetype: EnemyArchetype) {
+        let mut e = s.zone().enemies.first().cloned().expect("a foe to reshape");
+        e.id = id.into();
+        e.name = id.into();
+        e.archetype = archetype;
+        e.is_boss = Some(true);
+        e.rank = None;
+        e.hp = 0;
+        s.zone_mut().enemies.push(e);
+        let idx = s.zone().enemies.len() - 1;
+        s.on_enemy_killed(idx);
+    }
+
+    #[test]
+    fn side_bosses_yield_the_trophy_their_quest_needs() {
+        for (zone, id, quest, tag) in [
+            (ZoneId::parse("barrow_2").unwrap(), "boss_morvath", "barrow_purge", "morvath_seal"),
+            (ZoneId::parse("mire_2").unwrap(), "boss_vexis", "spores_of_bog", "fungal_heart"),
+            (ZoneId::parse("frost_3").unwrap(), "boss_kaelthar", "cinder_and_frost", "ashen_ore_heart"),
+        ] {
+            let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 3);
+            s.quests.insert(quest.into(), QuestProgress {
+                id: quest.into(), status: QuestStatus::Active, stage: 1, outcome_label: None, history: vec![],
+            });
+            s.debug_warp(zone, -1, -1);
+            slay(&mut s, id, EnemyArchetype::DreadWraith);
+            assert!(s.has_quest_item(tag), "{id} drops {tag}");
+            assert_eq!(s.quests[quest].stage, 2);
+            let tracked = s.quest_tracker_json();
+            let row = tracked.as_array().unwrap().iter().find(|q| q["id"] == quest).unwrap();
+            assert_eq!(row["status"], "turnin", "the tracker sees {tag}");
+        }
+    }
+
+    /// Every item a quest asks for must have a source in the real game: a
+    /// tile that grants it or a boss that carries it.
+    #[test]
+    fn every_quest_item_can_be_obtained() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 42);
+        let mut sources: Vec<&str> = vec![];
+        for id in ["overworld", "dungeon_1", "dungeon_2", "dungeon_3", "dungeon_4", "dungeon_5",
+                   "barrow_1", "barrow_2", "mire_1", "mire_2", "frost_1", "frost_2", "frost_3"] {
+            s.debug_warp(ZoneId::parse(id).unwrap(), -1, -1);
+            for t in s.zone().tiles.iter().flatten() {
+                match t.kind {
+                    TileKind::ContrabandCache => sources.push("smuggler_ledger"),
+                    TileKind::HerbNode => sources.push("pale_nightbloom"),
+                    TileKind::WhisperingBell if id == "dungeon_3" => sources.push("whispering_bell"),
+                    TileKind::Chest if t.interact_id.as_deref() == Some("overworld_satchel_chest") => sources.push("wayfarer_satchel"),
+                    _ => {}
+                }
+            }
+            for e in &s.zone().enemies {
+                match e.id.as_str() {
+                    "boss_morvath" => sources.push("morvath_seal"),
+                    "boss_vexis" => sources.push("fungal_heart"),
+                    "boss_kaelthar" => sources.push("ashen_ore_heart"),
+                    _ => {}
+                }
+            }
+        }
+        let npcs = include_str!("npcs.rs");
+        let mut asked = 0;
+        for part in npcs.split("has_item_tag: Some(\"").skip(1) {
+            let tag = part.split('"').next().unwrap();
+            asked += 1;
+            assert!(sources.contains(&tag), "quest item `{tag}` has no source");
+        }
+        assert!(asked >= 8);
+    }
+
+    #[test]
+    fn story_tiles_grant_their_items_and_stages() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 42);
+        s.debug_warp(ZoneId::Dungeon(1), -1, -1);
+        s.zone_mut().enemies.clear();
+        let (x, y) = find_tile(&s, TileKind::ContrabandCache).unwrap();
+        s.interact_with_world_tile(x, y);
+        assert!(s.has_quest_item("smuggler_ledger"));
+        assert_eq!(s.quests["shadows_beneath"].stage, 2);
+        assert!(s.interact_with_world_tile(x, y).is_none(), "once only");
+
+        s.debug_warp(ZoneId::Dungeon(3), -1, -1);
+        s.zone_mut().enemies.clear();
+        let (x, y) = find_tile(&s, TileKind::WhisperingBell).unwrap();
+        s.player.attributes.arcana = 1;
+        assert!(matches!(s.interact_with_world_tile(x, y), Some(SessionEvent::OpenPrompt(_))));
+        s.choose_prompt("shatter_bell");
+        assert!(s.active_prompt.is_some(), "too little Arcana");
+        s.choose_prompt("take_bell");
+        assert!(s.has_quest_item("whispering_bell"));
+        assert_eq!(s.quests["whispering_bell"].stage, 2);
+    }
+
+    #[test]
+    fn six_steles_finish_the_survey() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 42);
+        s.quests.insert("deep_survey".into(), QuestProgress {
+            id: "deep_survey".into(), status: QuestStatus::Active, stage: 1, outcome_label: None, history: vec![],
+        });
+        let mut read = 0;
+        for id in ["oakhaven", "highspire", "overworld", "dungeon_1", "dungeon_2", "dungeon_3", "dungeon_4", "dungeon_5",
+                   "barrow_1", "mire_1", "frost_1"] {
+            s.debug_warp(ZoneId::parse(id).unwrap(), -1, -1);
+            s.zone_mut().enemies.clear();
+            let steles: Vec<(i32, i32)> = s.zone().tiles.iter().flatten()
+                .filter(|t| t.kind == TileKind::LoreTablet).map(|t| (t.x, t.y)).collect();
+            for (x, y) in steles {
+                if matches!(s.interact_with_world_tile(x, y), Some(SessionEvent::OpenPrompt(_))) {
+                    read += 1;
+                    s.choose_prompt("ok");
+                }
+            }
+        }
+        assert!(read >= 6, "only {read} readable steles in the whole game");
+        assert_eq!(s.quests["deep_survey"].stage, 6);
+    }
+
+    #[test]
+    fn hazards_hit_once_and_lethal_ones_wake_you_in_town() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 5);
+        s.debug_warp(ZoneId::Dungeon(2), -1, -1);
+        s.zone_mut().enemies.clear();
+        let (px, py) = (s.player.x, s.player.y);
+        let (nx, ny) = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().map(|d| (px + d.0, py + d.1))
+            .find(|(x, y)| s.tile_at(*x, *y).is_some_and(|t| t.walkable)).unwrap();
+        s.zone_mut().tiles[py as usize][px as usize].kind = TileKind::Floor; // not the arrival stairs
+        s.zone_mut().tiles[ny as usize][nx as usize].kind = TileKind::Trap;
+        s.zone_mut().tiles[ny as usize][nx as usize].revealed = Some(false);
+        assert_eq!(s.state_json()["zone"]["tiles"][ny as usize][nx as usize], "floor", "hidden until sprung");
+        s.player.attributes.agility = 1;
+        let hp = s.player.hp;
+        s.move_player(nx - px, ny - py);
+        // 5 + 2 per depth, then the Lynx may lick 2 HP back on its turn.
+        assert!((7..=9).contains(&(hp - s.player.hp)), "took {}", hp - s.player.hp);
+        assert_eq!(s.state_json()["zone"]["tiles"][ny as usize][nx as usize], "trap");
+        s.move_player(px - nx, py - ny);
+        let after = s.player.hp;
+        s.move_player(nx - px, ny - py);
+        assert!(s.player.hp >= after, "one use");
+        let t = &mut s.zone_mut().tiles[py as usize][px as usize];
+        t.kind = TileKind::EmberCrust;
+        t.used = None;
+        s.player.attributes.resolve = 1;
+        s.player.hp = 1;
+        assert_eq!(s.move_player(px - nx, py - ny), SessionEvent::PlayerDied);
+        assert_eq!(s.current, ZoneId::Oakhaven);
+    }
+
+    #[test]
+    fn malakor_ends_the_story_once_and_ascension_keeps_the_hero() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 9);
+        assert!(!s.ascend(), "not before the ending");
+        s.debug_warp(ZoneId::Dungeon(5), -1, -1);
+        slay(&mut s, "boss_malakor", EnemyArchetype::BossMalakor);
+        assert!(s.ending_pending());
+        assert_eq!(s.quests["sovereign_cinder"].status, QuestStatus::Completed);
+        assert!(s.ending_json()["lines"].as_array().unwrap().len() >= 2);
+        let bundle = s.to_bundle(0);
+        assert!(GameSession::from_bundle(&bundle).unwrap().ending_pending(), "survives a save");
+        s.acknowledge_ending();
+        assert!(!s.ending_pending());
+        let seal = crate::loot::create_quest_item(&mut s.id_gen, "morvath_seal");
+        s.player.inventory.push(seal);
+        s.player.level = 8;
+        let weapon = s.player.equipped["weapon"].clone();
+        assert!(s.ascend());
+        assert_eq!(s.cycle, 1);
+        assert_eq!(s.player.level, 8);
+        assert_eq!(s.player.equipped["weapon"], weapon);
+        assert!(!s.has_quest_item("morvath_seal"));
+        assert!(s.quests.is_empty());
+        assert!(!s.ending_pending());
+        assert_eq!(s.current, ZoneId::Oakhaven);
+    }
+
+    #[test]
+    fn bosses_always_drop_premium_loot_and_potions_stack() {
+        for seed in 1..25 {
+            let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, seed);
+            s.debug_warp(ZoneId::Dungeon(2), -1, -1);
+            s.zone_mut().loot.clear();
+            slay(&mut s, "boss_test", EnemyArchetype::BossBoneCantor);
+            let drops: Vec<&Item> = s.zone().loot.iter().filter_map(|l| l.item.as_ref()).collect();
+            assert_eq!(drops.len(), 1);
+            assert!(matches!(drops[0].rarity, ItemRarity::Epic | ItemRarity::Relic), "{:?}", drops[0].rarity);
+        }
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 1);
+        let n = s.player.inventory.len();
+        let potion = create_consumable(&mut s.id_gen, ConsumableKind::HealPotion, 1);
+        s.add_item_to_player(potion);
+        assert_eq!(s.player.inventory.len(), n);
+    }
+
+    fn ready_to_build() -> GameSession {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        for p in crate::town::BLACKSMITH_PIECES {
+            s.town.pieces_found.push(p.tag.into());
+        }
+        s.town.stall_item_found = true;
+        s
+    }
+
+    /// Everywhere the player can walk to in Oakhaven.
+    fn reach(s: &GameSession) -> std::collections::HashSet<(i32, i32)> {
+        let z = &s.zones["oakhaven"];
+        let start = (z.spawn_point.x, z.spawn_point.y);
+        let mut seen = std::collections::HashSet::from([start]);
+        let mut todo = vec![start];
+        while let Some((x, y)) = todo.pop() {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (x + dx, y + dy);
+                let open = z.tiles.get(n.1 as usize).and_then(|r| r.get(n.0 as usize)).is_some_and(|t| t.walkable);
+                if open && seen.insert(n) {
+                    todo.push(n);
+                }
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn every_lot_at_every_tier_leaves_the_town_walkable() {
+        for lot in [BlacksmithLot::Pondside, BlacksmithLot::Market, BlacksmithLot::WestGate] {
+            for pop in [12, 22, 38, 99] {
+                let mut s = ready_to_build();
+                s.town.population = pop;
+                assert!(s.complete_blacksmith(lot));
+                let ok = reach(&s);
+                let z = &s.zones["oakhaven"];
+                let beside = |x: i32, y: i32| (-1..=1).any(|oy| (-1..=1).any(|ox| ok.contains(&(x + ox, y + oy))));
+                for n in &z.npcs {
+                    assert!(beside(n.x, n.y), "{lot:?} pop {pop}: cannot reach {}", n.id);
+                    assert!(z.tiles[n.y as usize][n.x as usize].walkable, "{} is in a wall", n.id);
+                }
+                assert!(ok.contains(&(0, 7)), "{lot:?} pop {pop}: gate cut off");
+                let stairs = z.tiles.iter().flatten().find(|t| t.kind == TileKind::StairsDown).unwrap();
+                assert!(ok.contains(&(stairs.x, stairs.y)), "{lot:?} pop {pop}: stairs cut off");
+                for a in crate::town_layout::oakhaven_lot_anchors() {
+                    assert!(ok.iter().any(|(x, y)| crate::town_layout::lot_beside(*x, *y) == Some(a.lot)), "{:?} unreachable", a.lot);
+                }
+                let (px, py) = (s.player.x, s.player.y);
+                assert!(z.tiles[py as usize][px as usize].walkable);
+            }
+        }
+    }
+
+    #[test]
+    fn the_blacksmith_is_raised_and_moved_by_standing_at_a_lot() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 7);
+        s.player.x = 4;
+        s.player.y = 8; // beside the West Gate lot
+        assert_eq!(s.interact(), SessionEvent::OpenPrompt("lot".into()));
+        let p = s.prompt_json();
+        assert_eq!(p["options"].as_array().unwrap().len(), 1, "nothing to build yet, only a way out");
+        assert!(p["body"].as_str().unwrap().contains("Heartcoal"));
+        s.choose_prompt("build_here");
+        assert!(!s.town.blacksmith_complete);
+        s.choose_prompt("leave_lot");
+
+        let mut s = ready_to_build();
+        s.player.x = 3;
+        s.player.y = 10; // standing on the lot itself
+        s.interact();
+        s.choose_prompt("build_here");
+        assert_eq!(s.town.blacksmith_lot, Some(BlacksmithLot::WestGate));
+        let here = &s.zone().tiles[s.player.y as usize][s.player.x as usize];
+        assert!(here.walkable, "the builder is moved out of the new wall");
+        assert!(!s.zone().tiles[10][3].walkable);
+        // Its own lot is now the shop.
+        s.player.x = 1;
+        s.player.y = 10;
+        assert_eq!(s.interact(), SessionEvent::OpenMerchant("blacksmith".into()));
+        // Move it, for free and with the wish paid once.
+        let gold = s.player.gold;
+        s.player.x = 18;
+        s.player.y = 11;
+        s.interact();
+        s.choose_prompt("build_here");
+        assert_eq!(s.town.blacksmith_lot, Some(BlacksmithLot::Pondside));
+        assert_eq!(s.player.gold, gold + 75);
+        assert!(s.zone().tiles[10][3].walkable, "the old lot is open ground again");
+        assert!(!s.zone().tiles[9][19].walkable);
+    }
+
+    #[test]
+    fn old_saves_take_up_the_new_lots() {
+        let mut s = ready_to_build();
+        s.complete_blacksmith(BlacksmithLot::Market);
+        let mut b = s.to_bundle(0);
+        // A save from before buildings were solid.
+        let fresh = serde_json::to_value(create_oakhaven_map()).unwrap();
+        b["zones"]["oakhaven"] = fresh;
+        let back = GameSession::from_bundle(&b).unwrap();
+        assert!(!back.zones["oakhaven"].tiles[3][15].walkable);
+    }
+
+    #[test]
+    fn rebuilding_is_optional_for_the_story() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 9);
+        s.debug_warp(ZoneId::Dungeon(5), -1, -1);
+        slay(&mut s, "boss_malakor", EnemyArchetype::BossMalakor);
+        assert!(s.ending_pending() && !s.town.blacksmith_complete);
+    }
+
+    #[test]
+    fn snapshot_skips_unchanged_terrain_and_reports_sight() {
+        let mut s = GameSession::new_game("Garth", StarterClass::Vanguard, 4);
+        s.debug_warp(ZoneId::Dungeon(1), -1, -1);
+        let full = s.snapshot_json("", 0);
+        assert!(full["zone"].get("tiles").is_some());
+        let slim = s.snapshot_json(&s.current.to_string_id(), s.tile_rev);
+        assert!(slim["zone"].get("tiles").is_none());
+        assert!(slim.to_string().len() * 2 < full.to_string().len());
+        let sight = full["zone"]["sight"].as_array().unwrap();
+        assert_eq!(sight.len() as i32, s.zone().height);
+        let all: String = sight.iter().map(|r| r.as_str().unwrap()).collect();
+        assert!(all.contains('0') && all.contains('2'), "a dungeon starts mostly unseen");
+        assert!(full["zone"]["enemies"].as_array().unwrap().iter().any(|e| e["visible"] == false));
     }
 
     #[test]

@@ -4,6 +4,8 @@ Current direction is in `PROJECT_TRUTH.md` (Combined Model: Dark Cloud majors + 
 
 **Scope is still forming (Garth, Nov 21, 2026).** The full shape of the game isn't decided yet and will change as we build, until Garth says it's settled. Treat this roadmap as the current plan, not a contract: when Garth makes a new call, update the affected docs with a dated note rather than defending the old plan.
 
+> **Correction, 2026-11-25.** Milestones 2 and 3 ticked the inventory, gamepad navigation, quests, NG+ and the endings, but the front-end had no inventory, seven quests could not be finished, and nothing happened when Malakor died. They are built on branch `pipeline/optimize` and wait for Garth to play them. Still not ported from the web game: Hardcore, Travel map, Hall of Fame, Credits, tutorial coach marks, ambient barks.
+
 ## Milestone 0 — Repo Bootstrap & Toolchain (DONE 2026-11-20)
 - [x] Install Rust toolchain (`rustup` / `rustc` / `cargo`) on Apple Silicon Mac alongside Godot 4.7.2 (`/Applications/Godot.app`).
 - [x] Create `Garthnesss/Elfstory-godot` with canonical docs (`PROJECT_TRUTH.md`, `AGENTS.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `STATUS.md`, `HANDOFF.md`), Nov 19 audit archive, V2 Blender/ComfyUI pipeline tools, V2 `.glb` models, and portraits.
@@ -53,8 +55,8 @@ Garth picked all four; take them in this order unless he says otherwise:
 4. [x] **Town loop feel** — done Nov 22: cold forge ruin at `(7, 2)` and marked build lots before completion, rebuilt `blacksmith.glb` + build/tier-up celebration VFX/SFX on chosen lot, visible Tier 1–3 ActRaiser growth structures (gardens, settler cottages, arbor, platypus, grove), regional supply shop refresh on banking, and upgraded `TownPanel`.
 Also open: Garth's playtest notes from the app (all 4 combat gaps closed Nov 22).
 
-## Retired / Dormant Systems (Nov 24, 2026 — Oakhaven Pitch C Redesign)
-Town-rebuilding UI in Oakhaven is retired/hidden (`godot/Main.gd` `ENABLE_TOWN_REBUILD_UI := false`) while keeping the underlying Rust implementation intact so it can be restored or deleted cleanly later:
-- `godot/Main.gd`: `ENABLE_TOWN_REBUILD_UI`, `rebuild_town_panel()`, `build_lot_markers()`
-- `rust/elfstory-core/src/town.rs` & `rust/elfstory-core/src/town_layout.rs` (rebuild pieces, Heartcoal stall, 3 lots, ActRaiser growth placements, regional supplies)
-- `rust/elfstory-core/src/session.rs`: `complete_blacksmith`, `relocate_blacksmith`, `return_to_oakhaven` banking/ticking
+## Town rebuilding: optional, on the Pitch C layout (Garth, Nov 25, 2026)
+Hidden on Nov 24 with the Oakhaven Pitch C redesign, restored on Nov 25: the layout was meant to change, not the rebuilding.
+- The player stands at a staked lot and presses F to raise or move Torin's forge. T shows progress and changes nothing.
+- Placements: `rust/elfstory-core/src/town_layout.rs`. Walls and placement safety: `settle_town()` in `session.rs`.
+- Optional: no quest and no ending requires it, and a test holds that.

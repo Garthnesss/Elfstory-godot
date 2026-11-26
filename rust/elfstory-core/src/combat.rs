@@ -89,6 +89,28 @@ pub fn compute_visibility(zone: &mut ZoneMap, px: i32, py: i32, radius: i32) {
             d += 0.5;
         }
     }
+    // 72 rays slip between wall blocks at range, so a room in full view had
+    // holes in its walls. A wall touching floor you can see is a wall you see.
+    let mut walls: Vec<(usize, usize)> = vec![];
+    for y in 0..zone.height {
+        for x in 0..zone.width {
+            let t = &zone.tiles[y as usize][x as usize];
+            if t.visible || !t.blocks_sight || chebyshev(x, y, px, py) > radius + 1 {
+                continue;
+            }
+            let lit = (-1..=1).any(|oy| {
+                (-1..=1).any(|ox| tile_at(zone, x + ox, y + oy).is_some_and(|n| n.visible && !n.blocks_sight))
+            });
+            if lit {
+                walls.push((x as usize, y as usize));
+            }
+        }
+    }
+    for (x, y) in walls {
+        let t = &mut zone.tiles[y][x];
+        t.visible = true;
+        t.explored = true;
+    }
 }
 
 pub fn manhattan(ax: i32, ay: i32, bx: i32, by: i32) -> i32 {

@@ -1,0 +1,3 @@
+# Style words for every concept and texture (read by the pipeline's comfy_runner.py).
+# Describe the look. Never name another game, studio, or living artist.
+painted tabletop miniature, crisp stylized low-poly, hand-painted fantasy, chunky readable shapes, matte surfaces

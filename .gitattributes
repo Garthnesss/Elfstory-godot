@@ -1,0 +1,20 @@
+* text=auto eol=lf
+*.gd text
+*.tscn text
+*.tres text
+*.godot text
+*.import text
+*.uid text
+*.gdshader text
+*.rs text
+*.toml text
+*.md text
+*.glb binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.ogg binary
+*.wav binary
+*.dylib binary
+# Binaries are in ordinary git, not LFS: 290 MB of history is already there, this
+# repository is public, and moving them means rewriting it. Garth's call (STATUS.md).
